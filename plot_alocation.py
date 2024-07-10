@@ -271,9 +271,16 @@ class PlotAlocation:
         return False
 
     """Distribuição randomica"""
+    def _generate_random_sample_points(self, shp, plot_area, max_attempts=3000):
+        QgsMessageLog.logMessage(f"sample number : {self.sample_number}", 'Your Plugin Name',
+                                 Qgis.Critical)
+        if self.sample_number < 1:
+            max_number_of_points = math.ceil((self.sample_number * self.total_area)/plot_area)
+        else:
+            max_number_of_points = self.sample_number
 
-    def _generate_random_sample_points(self, shp, total_area, plot_area, max_attempts=3000):
-        max_number_of_points = self.sample_number
+        QgsMessageLog.logMessage(f"max n points: {max_number_of_points}", 'Your Plugin Name',
+                                 Qgis.Critical)
         extent = shp.extent()
         x_min, y_min, x_max, y_max = extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()
 
@@ -662,7 +669,7 @@ class PlotAlocation:
                     QMessageBox.warning(self.dlg, "Aviso", "The number of plots exceeds the total boundary area.")
                     return  # Keep the dialog open
                 if self.distribution == "random":
-                    point_layer = self._generate_random_sample_points(self.shp_layer, self.total_area, self.plot_area)
+                    point_layer = self._generate_random_sample_points(self.shp_layer, self.plot_area)
                 elif self.distribution == "systematic":
                     point_layer = self._generate_systematic_sample_points(self.shp_layer, self.plot_area)
                 elif self.distribution == "systematic - hexagonal":
