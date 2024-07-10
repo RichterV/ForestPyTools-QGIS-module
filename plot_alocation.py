@@ -153,6 +153,10 @@ class PlotAlocation:
             ]
 
         self.dlg.epsg_selector.addItems(epsg_codes)
+        # Seleciona por padrão o EPSG 32722 (Zone 22S)
+        index = self.dlg.epsg_selector.findText("Zone 22S - EPSG:32722")
+        if index != -1:
+            self.dlg.epsg_selector.setCurrentIndex(index)
 
     def open_vector(self):
         """Caixa de diálogo para carregar vetores locais"""
