@@ -322,7 +322,7 @@ class PlotAlocation:
 
     """Poisson-Disc Sampling"""
     def _generate_systematic_poisson_disc_sampling_sample_points(self, shp, plot_area, k=30):
-        QgsMessageLog.logMessage(f"sample number : {self.sample_number}", 'Your Plugin Name', Qgis.INFO)
+        QgsMessageLog.logMessage(f"sample number : {self.sample_number}", 'Your Plugin Name', Qgis.Info)
 
         if self.sample_number < 1:
             max_number_of_points = math.ceil((self.sample_number * self.total_area) / plot_area)
@@ -759,7 +759,7 @@ class PlotAlocation:
         if self.first_start:
             self.first_start = False
             self.dlg = PlotAlocationDialog()
-            self.dlg.distribution.addItems(["random", "Poisson Disc Sampling", "systematic", "systematic - custom"])
+            self.dlg.distribution.addItems(["random", "poisson disc sampling", "systematic", "systematic - custom"])
 
             # Define o botão de rádio "Sul" como selecionado por padrão
             self.dlg.radio_button_south.setChecked(True)
@@ -845,7 +845,7 @@ class PlotAlocation:
                     point_layer = self._generate_systematic_sample_points(self.shp_layer, self.plot_area)
                 elif self.distribution == "systematic - hexagonal":
                     point_layer = self._generate_hexagonal_sample_points(self.shp_layer, self.plot_area)
-                elif self.distribution == "Poisson Disc Sampling":
+                elif self.distribution == "poisson disc sampling":
                     point_layer = self._generate_systematic_poisson_disc_sampling_sample_points(self.shp_layer, self.plot_area)
                 elif self.distribution == "systematic - custom":
                     point_layer = self._generate_custom_systematic_sample_points(self.shp_layer, self.plot_area)
