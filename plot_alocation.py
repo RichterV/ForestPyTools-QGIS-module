@@ -234,7 +234,6 @@ class PlotAlocation:
 
         return transformed_layer
 
-
     def calculate_total_area(self, layer):
         """Calcular a área total dos polígonos no layer fornecido"""
         total_area = 0
@@ -300,36 +299,13 @@ class PlotAlocation:
                 return True
         return False
 
-    def _check_points_distance(self, point, plot_area, existing_points):
-        """Check if the point is at a valid distance from existing points and polygon boundaries."""
-        radius = math.sqrt(plot_area / math.pi)  # Ajuste conforme necessário
-        for existing_point in existing_points:
-            distance = point.distance(existing_point)
-            if distance < radius * 2:
-                return False
-
-        # Verificar distância ao limite dos polígonos
-        for feature in self.shp_layer.getFeatures():
-            geom = feature.geometry()
-            if geom:
-                shapely_geom = shape(mapping(geom))
-                boundary = shapely_geom.boundary
-                distance_to_boundary = point.distance(QgsGeometry.fromWkt(boundary.wkt))
-                if distance_to_boundary < (self.min_border_distance + radius):
-                    return False
-
-        return True
-
-    """Poisson-Disc Sampling"""
-    def _generate_systematic_poisson_disc_sampling_sample_points(self, shp, plot_area, k=30):
-        QgsMessageLog.logMessage(f"sample number : {self.sample_number}", 'Your Plugin Name', Qgis.Info)
-
+    # =================================================
+    """Best alocation"""
+    def _generate_systematic_best_sampling_sample_points(self, shp, plot_area):
         if self.sample_number < 1:
             max_number_of_points = math.ceil((self.sample_number * self.total_area) / plot_area)
         else:
             max_number_of_points = self.sample_number
-        radius = math.sqrt((self.total_area / max_number_of_points) / math.pi)
-
         extent = shp.extent()
         x_min, y_min, x_max, y_max = extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()
 
@@ -342,79 +318,59 @@ class PlotAlocation:
             QgsMessageLog.logMessage("Intervalo de valores de x ou y inválido.", 'Your Plugin Name', Qgis.Critical)
             return None
 
-        def generate_poisson_disc_samples(width, height, radius, k):
-            cell_size = radius / np.sqrt(2)
-            grid_width = int(np.ceil(width / cell_size))
-            grid_height = int(np.ceil(height / cell_size))
+        grid_spacing = math.sqrt(plot_area)
+        x_coords = np.arange(x_min, x_max, grid_spacing)
+        y_coords = np.arange(y_min, y_max, grid_spacing)
 
-            grid = -np.ones((grid_height, grid_width), dtype=int)
-            points = []
-            active_list = []
-
-            def get_cell_coords(point):
-                return int(point[1] // cell_size), int(point[0] // cell_size)
-
-            def is_valid(point):
-                cell_y, cell_x = get_cell_coords(point)
-                if cell_x < 0 or cell_x >= grid_width or cell_y < 0 or cell_y >= grid_height:
-                    return False
-                for dy in range(-2, 3):
-                    for dx in range(-2, 3):
-                        nx, ny = cell_x + dx, cell_y + dy
-                        if 0 <= nx < grid_width and 0 <= ny < grid_height:
-                            if grid[ny, nx] != -1:
-                                neighbor = points[grid[ny, nx]]
-                                if np.linalg.norm(np.array(point) - np.array(neighbor)) < radius:
-                                    return False
-                return True
-
-            first_point = (np.random.uniform(0, width), np.random.uniform(0, height))
-            points.append(first_point)
-            active_list.append(first_point)
-            grid[get_cell_coords(first_point)] = 0
-
-            while active_list:
-                idx = np.random.randint(0, len(active_list))
-                point = active_list[idx]
-                found = False
-                for _ in range(k):
-                    angle = np.random.uniform(0, 2 * np.pi)
-                    offset = np.random.uniform(radius, 2 * radius)
-                    new_point = (point[0] + offset * np.cos(angle), point[1] + offset * np.sin(angle))
-                    if is_valid(new_point):
-                        points.append(new_point)
-                        active_list.append(new_point)
-                        grid[get_cell_coords(new_point)] = len(points) - 1
-                        found = True
-                        break
-                if not found:
-                    active_list.pop(idx)
-
-            return points
-
-        width, height = x_max - x_min, y_max - y_min
-        points = generate_poisson_disc_samples(width, height, radius, k)
         valid_points = []
-        source_crs = shp.crs()
-        target_crs = shp.crs()
 
-        for point in points:
-            x, y = point[0] + x_min, point[1] + y_min
-            qgis_point = QgsGeometry.fromPointXY(QgsPointXY(x, y))
-            transformed_point = self.transform_to_layer_crs(qgis_point, source_crs, target_crs)
-            if transformed_point is not None and self._check_point_within_polygons(transformed_point,
-                                                                                   shp) and self._check_points_distance(
-                transformed_point, plot_area, valid_points):
-                valid_points.append(transformed_point)
+        for x in x_coords:
+            for y in y_coords:
+                point = QgsGeometry.fromPointXY(QgsPointXY(x, y))
+                if self._check_point_within_polygons(point, shp) and self._check_points_distance(point, plot_area,
+                                                                                                 valid_points):
+                    valid_points.append(point)
 
-        if valid_points:
-            point_layer = self.create_point_layer(valid_points, shp.crs())
-            return point_layer
-        else:
-            QgsMessageLog.logMessage("Não foi possível gerar parcelas com os critérios estabelecidos.",
-                                     'Your Plugin Name', Qgis.Critical)
-            return None
+        # Step to adjust points until we reach max_number_of_points
 
+        while len(valid_points) > max_number_of_points:
+            min_dist = float('inf')
+            closest_pair = None
+
+            # Find the closest pair of points
+            for i in range(len(valid_points)):
+                for j in range(i + 1, len(valid_points)):
+                    dist = valid_points[i].distance(valid_points[j])
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_pair = (i, j)
+
+            if closest_pair:
+                i, j = closest_pair
+                point1 = valid_points[i].asPoint()
+                point2 = valid_points[j].asPoint()
+
+                # Calculate midpoint
+                midpoint = QgsGeometry.fromPointXY(QgsPointXY(
+                    (point1.x() + point2.x()) / 2,
+                    (point1.y() + point2.y()) / 2
+                ))
+
+                # Remove the closest pair
+                valid_points.pop(max(i, j))
+                valid_points.pop(min(i, j))
+
+                # Add the midpoint
+                valid_points.append(midpoint)
+
+        valid_points = self.create_point_layer(valid_points, shp.crs())
+        if len(valid_points) < max_number_of_points:
+            QMessageBox.warning(self.dlg, "Warning!",
+                                "Unable to generate plots with the established criteria. Only the possible plots were generated.")
+            return valid_points
+        return valid_points
+    """FIM best alocation"""
+    #=================================================
     """Distribuição randomica"""
     def _generate_random_sample_points(self, shp, plot_area, max_attempts=3000):
         QgsMessageLog.logMessage(f"sample number : {self.sample_number}", 'Your Plugin Name', Qgis.Critical)
@@ -469,8 +425,9 @@ class PlotAlocation:
             QgsMessageLog.logMessage("Não foi possível gerar parcelas com os critérios estabelecidos.",
                                      'Your Plugin Name', Qgis.Critical)
             return None
+    """FIM distribuição randomica"""
+    #=====================================================================================
     """Distribuição sistematica"""
-
     def _generate_systematic_sample_points(self, shp, plot_area):
         extent = shp.extent()
         x_min, y_min, x_max, y_max = extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()
@@ -508,52 +465,9 @@ class PlotAlocation:
             QgsMessageLog.logMessage("Não foi possível gerar parcelas com os critérios estabelecidos.",
                                      'Your Plugin Name', Qgis.Critical)
             return None
+    """FIM Distribuição sistematica"""
 
-    """Implementação da Grade Hexagonal"""
-
-    def _generate_hexagonal_sample_points(self, shp, plot_area):
-        extent = shp.extent()
-        x_min, y_min, x_max, y_max = extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()
-
-        if not (np.isfinite(x_min) and np.isfinite(y_min) and np.isfinite(x_max) and np.isfinite(y_max)):
-            QgsMessageLog.logMessage("Extensão do layer contém valores infinitos ou NaN.", 'Your Plugin Name',
-                                     Qgis.Critical)
-            return None
-
-        if x_min >= x_max or y_min >= y_max:
-            QgsMessageLog.logMessage("Intervalo de valores de x ou y inválido.", 'Your Plugin Name', Qgis.Critical)
-            return None
-
-        radius = math.sqrt((2 * plot_area) / (3 * math.sqrt(3)))
-        x_spacing = radius * 3 / 2
-        y_spacing = radius * math.sqrt(3)
-
-        valid_points = []
-
-        y = y_min
-        row = 0
-        while y <= y_max:
-            x = x_min + (row % 2) * radius * 3 / 2
-            while x <= x_max:
-                point = QgsGeometry.fromPointXY(QgsPointXY(x, y))
-                if self._check_point_within_polygons(point, shp) and self._check_points_distance(point, plot_area,
-                                                                                                 valid_points):
-                    valid_points.append(point)
-                x += x_spacing
-            y += y_spacing
-            row += 1
-
-        if len(valid_points) < self.sample_number:
-            QMessageBox.warning(self.dlg, "Aviso",
-                                "Não foi possível gerar todas as parcelas com os critérios estabelecidos.")
-
-        if valid_points:
-            point_layer = self.create_point_layer(valid_points, shp.crs())
-            return point_layer
-        else:
-            QgsMessageLog.logMessage("Não foi possível gerar parcelas com os critérios estabelecidos.",
-                                     'Your Plugin Name', Qgis.Critical)
-            return None
+    # =====================================================================================
 
     def create_point_layer(self, points, crs):
         point_layer = QgsVectorLayer("Point?crs={}".format(crs.authid()), "Sample Points", "memory")
@@ -759,7 +673,7 @@ class PlotAlocation:
         if self.first_start:
             self.first_start = False
             self.dlg = PlotAlocationDialog()
-            self.dlg.distribution.addItems(["random", "poisson disc sampling", "systematic", "systematic - custom"])
+            self.dlg.distribution.addItems(["random", "best sampling", "systematic"])
 
             # Define o botão de rádio "Sul" como selecionado por padrão
             self.dlg.radio_button_south.setChecked(True)
@@ -845,8 +759,8 @@ class PlotAlocation:
                     point_layer = self._generate_systematic_sample_points(self.shp_layer, self.plot_area)
                 elif self.distribution == "systematic - hexagonal":
                     point_layer = self._generate_hexagonal_sample_points(self.shp_layer, self.plot_area)
-                elif self.distribution == "poisson disc sampling":
-                    point_layer = self._generate_systematic_poisson_disc_sampling_sample_points(self.shp_layer, self.plot_area)
+                elif self.distribution == "best sampling":
+                    point_layer = self._generate_systematic_best_sampling_sample_points(self.shp_layer, self.plot_area)
                 elif self.distribution == "systematic - custom":
                     point_layer = self._generate_custom_systematic_sample_points(self.shp_layer, self.plot_area)
                 else:
