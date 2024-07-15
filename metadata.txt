@@ -7,7 +7,7 @@ name=FPT Plot Alocation
 qgisMinimumVersion=3.0
 description=Plot alocation for forest inventory
 version=0.1
-author= Vinicius Richter and Renato Souza Santos
+author= Vinicius Richter
 email=vinicius00rich@gmail.com
 
 about=In this module, you will be able to plan forest inventories by allocating plots.
