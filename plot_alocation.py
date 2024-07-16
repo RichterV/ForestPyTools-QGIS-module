@@ -36,7 +36,8 @@ import os
 import random
 from osgeo import ogr
 import geopandas as gpd
-from shapely.geometry import shape, mapping, GeometryCollection, Point
+from shapely.geometry import shape, mapping, GeometryCollection, Point, Polygon
+from shapely.ops import unary_union
 from shapely import wkt
 import math
 import numpy as np
@@ -81,16 +82,26 @@ class PlotAlocation:
         self.select_save_button_connected = False
         self.dialog_open = False
 
-
     def update_ok_button_state(self):
         """Activate the OK button if all required fields are filled."""
         is_shp_selected = bool(self.dlg.shp.currentText())
-        is_plot_area_filled = self.dlg.plot_area.value() > 0
-        is_sample_number_filled = self.dlg.sample_number.value() > 0 if self.dlg.sample_number.isEnabled() else True
+        plot_format = self.dlg.plot_format_selector.currentText()
 
-        self.dlg.button_box.button(QDialogButtonBox.Ok).setEnabled(
-            is_shp_selected and is_plot_area_filled and is_sample_number_filled
-        )
+        if plot_format == "rectangle":
+            # Para o formato 'rectangle', é necessário que os valores X e Y sejam preenchidos e diferentes de zero
+            is_x_filled = self.dlg.custom_plot_format_x_value.value() > 0
+            is_y_filled = self.dlg.custom_plot_format_y_value.value() > 0
+
+            self.dlg.button_box.button(QDialogButtonBox.Ok).setEnabled(
+                is_shp_selected and is_x_filled and is_y_filled
+            )
+        else:
+            # Para outros formatos, o campo 'plot_area' é necessário
+            is_plot_area_filled = self.dlg.plot_area.value() > 0
+            is_sample_number_filled = self.dlg.sample_number.value() > 0 if self.dlg.sample_number.isEnabled() else True
+            self.dlg.button_box.button(QDialogButtonBox.Ok).setEnabled(
+                is_shp_selected and is_plot_area_filled and is_sample_number_filled
+            )
 
     def get_selected_epsg(self):
         """Obter o EPSG selecionado pelo usuário."""
@@ -243,7 +254,63 @@ class PlotAlocation:
             total_area += area
         return total_area
 
-    def _check_points_distance(self, point, plot_area, existing_points, buffer_type="round"):
+    def _check_rectangle(self, point, existing_points, width, height):
+        """
+        Verifica se um retângulo centrado em 'point' é válido.
+
+        :param point: QgsGeometry centrada no ponto do retângulo.
+        :param existing_points: Lista de QgsGeometry dos centros dos retângulos existentes.
+        :param width: Largura do retângulo.
+        :param height: Altura do retângulo.
+        :return: True se o retângulo estiver completamente contido em uma feature, não intersectar nenhum retângulo existente, e estiver a pelo menos self.min_border_distance dos limites dos polígonos. False caso contrário.
+        """
+        point_ = point.asPoint()
+
+        half_width = width / 2
+        half_height = height / 2
+
+        # Define os cantos do retângulo ao redor do ponto central
+        rectangle_points = [
+            QgsPointXY(point_.x() - half_width, point_.y() - half_height),
+            QgsPointXY(point_.x() + half_width, point_.y() - half_height),
+            QgsPointXY(point_.x() + half_width, point_.y() + half_height),
+            QgsPointXY(point_.x() - half_width, point_.y() + half_height),
+            QgsPointXY(point_.x() - half_width, point_.y() - half_height)  # Fecha o polígono
+        ]
+
+        # Cria a geometria do retângulo como um polígono
+        rectangle_geom = QgsGeometry.fromPolygonXY([rectangle_points])
+
+        # Verifica se o retângulo está completamente dentro de pelo menos uma feature na camada
+        for feature in self.shp_layer.getFeatures():
+            feature_geom = feature.geometry()
+
+            # Buffer negativo da feature para garantir distância mínima dos limites
+            buffered_feature_geom = feature_geom.buffer(-self.min_border_distance, 1)
+
+            contains_all_points = all(
+                buffered_feature_geom.contains(QgsGeometry.fromPointXY(pt)) for pt in rectangle_points)
+
+            if contains_all_points:
+                # Verifica se o retângulo não intersecta nenhum retângulo dos existing_points
+                for existing_point in existing_points:
+                    existing_point_ = existing_point.asPoint()
+                    existing_rectangle_points = [
+                        QgsPointXY(existing_point_.x() - half_width, existing_point_.y() - half_height),
+                        QgsPointXY(existing_point_.x() + half_width, existing_point_.y() - half_height),
+                        QgsPointXY(existing_point_.x() + half_width, existing_point_.y() + half_height),
+                        QgsPointXY(existing_point_.x() - half_width, existing_point_.y() + half_height),
+                        QgsPointXY(existing_point_.x() - half_width, existing_point_.y() - half_height)
+                        # Fecha o polígono
+                    ]
+                    existing_rectangle_geom = QgsGeometry.fromPolygonXY([existing_rectangle_points])
+                    if rectangle_geom.intersects(existing_rectangle_geom):
+                        return False  # Se intersecta com um retângulo existente, é inválido
+
+                return True  # Se está contido em uma feature e não intersecta retângulos existentes, é válido
+
+        return False
+    def _check_points_distance(self, point, plot_area, existing_points, buffer_type):
         """Check if the point is at a valid distance from existing points and polygon boundaries."""
         if buffer_type == "round":
             radius = math.sqrt(plot_area / math.pi)
@@ -260,7 +327,7 @@ class PlotAlocation:
                         QgsGeometry.fromWkt(boundary.wkt))  # Convert back to QGIS geometry
                     if distance_to_boundary < (self.min_border_distance + radius):
                         return False
-        else:
+        elif buffer_type == "squared":
             # Calculate half the side length of the square
             half_side = math.sqrt(plot_area) / 2
             point_x, point_y = point.asPoint().x(), point.asPoint().y()
@@ -289,7 +356,10 @@ class PlotAlocation:
                         QgsGeometry.fromWkt(boundary.wkt))  # Convert back to QGIS geometry
                     if distance_to_boundary < (self.min_border_distance + half_side):
                         return False
-
+        elif buffer_type == "rectangle":
+            rect_width = self.custom_plot_format_x_value
+            rect_height = self.custom_plot_format_y_value
+            return self._check_rectangle(point, existing_points, rect_width,rect_height)
         return True
 
     def _check_point_within_polygons(self, point, layer):
@@ -328,7 +398,7 @@ class PlotAlocation:
             for y in y_coords:
                 point = QgsGeometry.fromPointXY(QgsPointXY(x, y))
                 if self._check_point_within_polygons(point, shp) and self._check_points_distance(point, plot_area,
-                                                                                                 valid_points):
+                                                                                                 valid_points, self.plot_format):
                     valid_points.append(point)
 
         # Step to adjust points until we reach max_number_of_points
@@ -409,7 +479,7 @@ class PlotAlocation:
             transformed_point = self.transform_to_layer_crs(point, source_crs, target_crs)
             if transformed_point is not None and self._check_point_within_polygons(transformed_point,
                                                                                    shp) and self._check_points_distance(
-                    transformed_point, plot_area, valid_points):
+                    transformed_point, plot_area, valid_points,self.plot_format):
                 valid_points.append(transformed_point)
 
             attempts += 1
@@ -451,7 +521,7 @@ class PlotAlocation:
             for y in y_coords:
                 point = QgsGeometry.fromPointXY(QgsPointXY(x, y))
                 if self._check_point_within_polygons(point, shp) and self._check_points_distance(point, plot_area,
-                                                                                                 valid_points):
+                                                                                                 valid_points,self.plot_format):
                     valid_points.append(point)
 
         if len(valid_points) < self.sample_number:
@@ -593,7 +663,7 @@ class PlotAlocation:
             geom = feature.geometry()
             if buffer_type == "round":
                 buffer_geom = geom.buffer(buffer_distance, 30)  # 30 segments to approximate a circle
-            else:
+            elif buffer_type == "squared":
                 # Create a squared buffer
                 center = geom.asPoint()
                 x, y = center.x(), center.y()
@@ -606,6 +676,21 @@ class PlotAlocation:
                     QgsPointXY(x - half_side, y - half_side)
                 ]
                 buffer_geom = QgsGeometry.fromPolygonXY([coords])
+            elif buffer_type == "rectangle":
+                point_ = geom.asPoint()
+
+                half_width = self.custom_plot_format_x_value / 2
+                half_height = self.custom_plot_format_y_value / 2
+
+                # Define os cantos do retângulo ao redor do ponto central
+                rectangle_points = [
+                    QgsPointXY(point_.x() - half_width, point_.y() - half_height),
+                    QgsPointXY(point_.x() + half_width, point_.y() - half_height),
+                    QgsPointXY(point_.x() + half_width, point_.y() + half_height),
+                    QgsPointXY(point_.x() - half_width, point_.y() + half_height)
+                ]
+
+                buffer_geom = QgsGeometry.fromPolygonXY([rectangle_points])
 
             buffer_feature = QgsFeature()
             buffer_feature.setGeometry(buffer_geom)
@@ -664,6 +749,18 @@ class PlotAlocation:
         self.dlg.systematic_custom_y_label.setEnabled(is_custom_systematic)
         self.dlg.systematic_custom_title.setEnabled(is_custom_systematic)
 
+    def update_rectangle_plot_format_parameters_state(self):
+        is_custom_plot_format = self.dlg.plot_format_selector.currentText() == "rectangle"
+        self.dlg.custom_plot_format_label_x.setEnabled(is_custom_plot_format)
+        self.dlg.custom_plot_format_label_y.setEnabled(is_custom_plot_format)
+        self.dlg.custom_plot_format_x_value.setEnabled(is_custom_plot_format)
+        self.dlg.custom_plot_format_y_value.setEnabled(is_custom_plot_format)
+
+        # Desativa o campo 'Plot area' se o formato selecionado é 'rectangle'
+        self.dlg.plot_area.setEnabled(not is_custom_plot_format)
+
+
+
     def run(self):
         """Run method that performs all the real work"""
         if self.dialog_open:  # Check if the dialog is already open
@@ -679,7 +776,7 @@ class PlotAlocation:
             self.dlg.radio_button_south.setChecked(True)
 
             # Initialize the plot_format_selector options
-            self.dlg.plot_format_selector.addItems(["round", "squared"])
+            self.dlg.plot_format_selector.addItems(["round", "squared","rectangle"])
 
             # Connect the dialog's finished signal to a method that sets dialog_open to False
             self.dlg.finished.connect(self.on_dialog_closed)
@@ -709,7 +806,9 @@ class PlotAlocation:
 
         self.dlg.distribution.currentIndexChanged.connect(self.update_sample_number_state)
         self.dlg.distribution.currentIndexChanged.connect(self.update_systematic_custom_parameters_state)
+        self.dlg.plot_format_selector.currentIndexChanged.connect(self.update_rectangle_plot_format_parameters_state)
         self.dlg.distribution.currentIndexChanged.connect(self.update_ok_button_state)
+        self.dlg.plot_format_selector.currentIndexChanged.connect(self.update_ok_button_state)
 
         self.update_ok_button_state()
         self.update_sample_number_state()
@@ -722,6 +821,12 @@ class PlotAlocation:
                 return
             try:
                 self.plot_area = self.dlg.plot_area.value()
+                if self.dlg.plot_format_selector.currentText() == "rectangle":
+                    self.custom_plot_format_x_value = float(
+                        self.dlg.custom_plot_format_x_value.value())
+                    self.custom_plot_format_y_value = float(
+                        self.dlg.custom_plot_format_y_value.value())
+                    self.plot_area = self.custom_plot_format_x_value * self.custom_plot_format_y_value
                 if self.plot_area <= 0:
                     raise ValueError("Plot area must be greater than zero.")
                 QgsMessageLog.logMessage(f"Plot Area: {self.plot_area}", 'Your Plugin Name', Qgis.Info)
