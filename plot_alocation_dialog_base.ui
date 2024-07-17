@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>380</width>
+    <width>502</width>
     <height>374</height>
    </rect>
   </property>
@@ -16,8 +16,8 @@
   <widget class="QDialogButtonBox" name="button_box">
    <property name="geometry">
     <rect>
-     <x>120</x>
-     <y>340</y>
+     <x>170</x>
+     <y>330</y>
      <width>161</width>
      <height>32</height>
     </rect>
@@ -39,7 +39,7 @@
     </rect>
    </property>
    <property name="text">
-    <string>Select the boundary layer:</string>
+    <string>Boundary layer:</string>
    </property>
   </widget>
   <widget class="QLabel" name="label_2">
@@ -132,7 +132,7 @@
     <rect>
      <x>220</x>
      <y>270</y>
-     <width>113</width>
+     <width>221</width>
      <height>20</height>
     </rect>
    </property>
@@ -153,7 +153,7 @@
   <widget class="QToolButton" name="select_save_button">
    <property name="geometry">
     <rect>
-     <x>340</x>
+     <x>450</x>
      <y>270</y>
      <width>31</width>
      <height>21</height>
@@ -218,7 +218,7 @@
     </rect>
    </property>
    <property name="text">
-    <string>Select EPSG:</string>
+    <string>EPSG:</string>
    </property>
   </widget>
   <widget class="QComboBox" name="epsg_selector">
@@ -226,7 +226,7 @@
     <rect>
      <x>220</x>
      <y>220</y>
-     <width>151</width>
+     <width>261</width>
      <height>22</height>
     </rect>
    </property>
@@ -286,8 +286,8 @@
   <widget class="QCheckBox" name="buffer_check_box">
    <property name="geometry">
     <rect>
-     <x>150</x>
-     <y>320</y>
+     <x>200</x>
+     <y>310</y>
      <width>151</width>
      <height>17</height>
     </rect>
@@ -411,6 +411,77 @@
     <string>Y distance (m):</string>
    </property>
   </widget>
+  <widget class="QLabel" name="custom_plot_format_label_x">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>370</x>
+     <y>20</y>
+     <width>51</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>X size (m):</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="custom_plot_format_label_y">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>370</x>
+     <y>40</y>
+     <width>111</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Y size (m):</string>
+   </property>
+  </widget>
+  <widget class="QDoubleSpinBox" name="custom_plot_format_x_value">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>430</x>
+     <y>20</y>
+     <width>61</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="maximum">
+    <double>360.000000000000000</double>
+   </property>
+   <property name="singleStep">
+    <double>0.500000000000000</double>
+   </property>
+  </widget>
+  <widget class="QDoubleSpinBox" name="custom_plot_format_y_value">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>430</x>
+     <y>40</y>
+     <width>61</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="maximum">
+    <double>360.000000000000000</double>
+   </property>
+   <property name="singleStep">
+    <double>0.500000000000000</double>
+   </property>
+  </widget>
+  <zorder>systematic_custom_y_label</zorder>
   <zorder>label_2</zorder>
   <zorder>button_box</zorder>
   <zorder>label</zorder>
@@ -439,6 +510,10 @@
   <zorder>systematic_custom_y_d</zorder>
   <zorder>systematic_custom_degree</zorder>
   <zorder>systematic_custom_degree_label</zorder>
+  <zorder>custom_plot_format_label_x</zorder>
+  <zorder>custom_plot_format_label_y</zorder>
+  <zorder>custom_plot_format_x_value</zorder>
+  <zorder>custom_plot_format_y_value</zorder>
  </widget>
  <resources/>
  <connections>
