@@ -196,7 +196,7 @@ class PlotAlocation:
             return None
 
     def set_input_layer(self):
-        """Obter a layer definida no combobox shp"""
+        """Obter a layer definida no combobox shp e verificar se o CRS é conhecido."""
         layer = None
         layer_name = self.dlg.shp.currentText()
         for layer_ in QgsProject.instance().mapLayers().values():
@@ -206,6 +206,12 @@ class PlotAlocation:
 
         if not layer:
             QgsMessageLog.logMessage("Layer not found", 'Your Plugin Name', Qgis.Critical)
+            return None
+
+        # Verificar se o CRS do layer é desconhecido
+        if not layer.crs().isValid() or layer.crs().authid() == '':
+            QMessageBox.warning(self.iface.mainWindow(), "Unknown CRS",
+                                "The selected layer's CRS is unknown. Please set a valid CRS before proceeding.")
             return None
 
         QgsMessageLog.logMessage(f"Selected Layer CRS: {layer.crs().authid()}", 'Your Plugin Name', Qgis.Info)
@@ -729,8 +735,6 @@ class PlotAlocation:
                 action)
             self.iface.removeToolBarIcon(action)
 
-    def show_warning_message(self, message_title, message):
-        iface.messageBar().pushMessage(message_title, message, level=Qgis.Warning, duration=5)
 
     def update_sample_number_state(self):
         """Ativa ou desativa o campo sample_number dependendo da distribuição selecionada."""
