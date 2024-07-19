@@ -65,7 +65,7 @@
     </rect>
    </property>
    <property name="text">
-    <string>Sample numbers or sample percentual:</string>
+    <string>Sample number or sample percentual:</string>
    </property>
   </widget>
   <widget class="QLabel" name="label_4">
