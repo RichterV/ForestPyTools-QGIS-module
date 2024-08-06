@@ -358,6 +358,7 @@ class PlotAlocation:
 
     # =================================================
     """Best alocation"""
+
     def _generate_systematic_best_sampling_sample_points(self, shp, plot_area):
         if self.sample_number < 1:
             max_number_of_points = math.ceil((self.sample_number * self.total_area) / plot_area)
@@ -384,11 +385,11 @@ class PlotAlocation:
             for y in y_coords:
                 point = QgsGeometry.fromPointXY(QgsPointXY(x, y))
                 if self._check_point_within_polygons(point, shp) and self._check_points_distance(point, plot_area,
-                                                                                                 valid_points, self.plot_format):
+                                                                                                 valid_points,
+                                                                                                 self.plot_format):
                     valid_points.append(point)
 
         # Step to adjust points until we reach max_number_of_points
-
         while len(valid_points) > max_number_of_points:
             min_dist = float('inf')
             closest_pair = None
@@ -398,8 +399,9 @@ class PlotAlocation:
                 for j in range(i + 1, len(valid_points)):
                     dist = valid_points[i].distance(valid_points[j])
                     if dist < min_dist:
-                        min_dist = dist
-                        closest_pair = (i, j)
+                        if self._check_point_within_same_polygon(valid_points[i], valid_points[j], shp):
+                            min_dist = dist
+                            closest_pair = (i, j)
 
             if closest_pair:
                 i, j = closest_pair
@@ -425,6 +427,14 @@ class PlotAlocation:
                                 "Unable to generate plots with the established criteria. Only the possible plots were generated.")
             return valid_points
         return valid_points
+
+    def _check_point_within_same_polygon(self, point1, point2, shp):
+        """ Check if both points are within the same polygon in the shapefile """
+        for feature in shp.getFeatures():
+            polygon = feature.geometry()
+            if polygon.contains(point1) and polygon.contains(point2):
+                return True
+        return False
     """FIM best alocation"""
     #=================================================
     """Distribuição randomica"""
