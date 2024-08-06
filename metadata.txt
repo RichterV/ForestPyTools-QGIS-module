@@ -13,7 +13,7 @@ email=vinicius00rich@gmail.com
 about=In this module, you will be able to plan forest inventories by allocating plots.
 
 tracker=https://richterv.github.io/fptoolsdoc/plot_alocation_qgis.html
-repository=https://richterv.github.io/fptoolsdoc/index.html
+repository=https://github.com/RichterV/ForestPyTools-QGIS-module
 # End of mandatory metadata
 
 # Recommended items:
@@ -25,7 +25,7 @@ hasProcessingProvider=no
 # Tags are comma separated with spaces allowed
 tags=python
 
-homepage=https://richterv.github.io/fptoolsdoc/plot_alocation.html
+homepage=https://richterv.github.io/fptoolsdoc/plot_alocation_qgis.html
 category=Plugins
 icon=icon.png
 # experimental flag

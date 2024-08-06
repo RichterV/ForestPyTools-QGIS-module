@@ -82,26 +82,7 @@ class PlotAlocation:
         self.select_save_button_connected = False
         self.dialog_open = False
 
-    def update_ok_button_state(self):
-        """Activate the OK button if all required fields are filled."""
-        is_shp_selected = bool(self.dlg.shp.currentText())
-        plot_format = self.dlg.plot_format_selector.currentText()
 
-        if plot_format == "rectangle":
-            # Para o formato 'rectangle', é necessário que os valores X e Y sejam preenchidos e diferentes de zero
-            is_x_filled = self.dlg.custom_plot_format_x_value.value() > 0
-            is_y_filled = self.dlg.custom_plot_format_y_value.value() > 0
-
-            self.dlg.button_box.button(QDialogButtonBox.Ok).setEnabled(
-                is_shp_selected and is_x_filled and is_y_filled
-            )
-        else:
-            # Para outros formatos, o campo 'plot_area' é necessário
-            is_plot_area_filled = self.dlg.plot_area.value() > 0
-            is_sample_number_filled = self.dlg.sample_number.value() > 0 if self.dlg.sample_number.isEnabled() else True
-            self.dlg.button_box.button(QDialogButtonBox.Ok).setEnabled(
-                is_shp_selected and is_plot_area_filled and is_sample_number_filled
-            )
 
     def get_selected_epsg(self):
         """Obter o EPSG selecionado pelo usuário."""
@@ -397,7 +378,6 @@ class PlotAlocation:
         grid_spacing = math.sqrt(plot_area)
         x_coords = np.arange(x_min, x_max, grid_spacing)
         y_coords = np.arange(y_min, y_max, grid_spacing)
-
         valid_points = []
 
         for x in x_coords:
@@ -449,13 +429,11 @@ class PlotAlocation:
     #=================================================
     """Distribuição randomica"""
     def _generate_random_sample_points(self, shp, plot_area, max_attempts=3000):
-        QgsMessageLog.logMessage(f"sample number : {self.sample_number}", 'Your Plugin Name', Qgis.Critical)
         if self.sample_number < 1:
             max_number_of_points = math.ceil((self.sample_number * self.total_area) / plot_area)
         else:
             max_number_of_points = self.sample_number
 
-        QgsMessageLog.logMessage(f"max n points: {max_number_of_points}", 'Your Plugin Name', Qgis.Critical)
         extent = shp.extent()
         x_min, y_min, x_max, y_max = extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()
 
@@ -542,9 +520,82 @@ class PlotAlocation:
                                      'Your Plugin Name', Qgis.Critical)
             return None
     """FIM Distribuição sistematica"""
+    # =====================================================================================
+    """Distribuição systematic custom"""
+
+    def _generate_systematic_custom_sample_points(self, shp, plot_area):
+        extent = shp.extent()
+        x_min, y_min, x_max, y_max = extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()
+
+        if not (np.isfinite(x_min) and np.isfinite(y_min) and np.isfinite(x_max) and np.isfinite(y_max)):
+            QgsMessageLog.logMessage("Extensão do layer contém valores infinitos ou NaN.", 'Your Plugin Name',
+                                     Qgis.Critical)
+            return None
+
+        if x_min >= x_max or y_min >= y_max:
+            QgsMessageLog.logMessage("Intervalo de valores de x ou y inválido.", 'Your Plugin Name', Qgis.Critical)
+            return None
+
+        x_spacing = self.systematic_custom_x_d
+        y_spacing = self.systematic_custom_y_d
+        rotation_angle = self.systematic_custom_degree
+
+        # Aumenta a área da grade para garantir cobertura após rotação
+        padding_factor = 1.5
+        x_min_padded = x_min - (x_max - x_min) * padding_factor
+        x_max_padded = x_max + (x_max - x_min) * padding_factor
+        y_min_padded = y_min - (y_max - y_min) * padding_factor
+        y_max_padded = y_max + (y_max - y_min) * padding_factor
+
+        x_coords = np.arange(x_min_padded, x_max_padded, x_spacing)
+        y_coords = np.arange(y_min_padded, y_max_padded, y_spacing)
+
+        valid_points = []
+
+        # Rotate points based on the rotation angle
+        rotation_angle_rad = np.deg2rad(rotation_angle)
+        cos_angle = np.cos(rotation_angle_rad)
+        sin_angle = np.sin(rotation_angle_rad)
+
+        # Calculate the center of the bounding box
+        center_x = (x_min + x_max) / 2
+        center_y = (y_min + y_max) / 2
+
+        for x in x_coords:
+            for y in y_coords:
+                # Translate point to origin
+                translated_x = x - center_x
+                translated_y = y - center_y
+
+                # Apply rotation
+                rotated_x = cos_angle * translated_x - sin_angle * translated_y
+                rotated_y = sin_angle * translated_x + cos_angle * translated_y
+
+                # Translate point back
+                final_x = rotated_x + center_x
+                final_y = rotated_y + center_y
+
+                point = QgsGeometry.fromPointXY(QgsPointXY(final_x, final_y))
+
+                if self._check_point_within_polygons(point, shp) and self._check_points_distance(point, plot_area,
+                                                                                                 valid_points,
+                                                                                                 self.plot_format):
+                    valid_points.append(point)
+
+        if len(valid_points) < self.sample_number:
+            QMessageBox.warning(self.dlg, "Aviso",
+                                "Não foi possível gerar todas as parcelas com os critérios estabelecidos.")
+
+        if valid_points:
+            point_layer = self.create_point_layer(valid_points, shp.crs())
+            return point_layer
+        else:
+            QgsMessageLog.logMessage("Não foi possível gerar parcelas com os critérios estabelecidos.",
+                                     'Your Plugin Name', Qgis.Critical)
+            return None
+    """FIM Distribuição systematic custom"""
 
     # =====================================================================================
-
     def create_point_layer(self, points, crs):
         point_layer = QgsVectorLayer("Point?crs={}".format(crs.authid()), "Sample Points", "memory")
         pr = point_layer.dataProvider()
@@ -735,23 +786,57 @@ class PlotAlocation:
                 action)
             self.iface.removeToolBarIcon(action)
 
+    def update_ok_button_state(self):
+        """Activate the OK button if all required fields are filled."""
+        is_shp_selected = bool(self.dlg.shp.currentText())
+        plot_format = self.dlg.plot_format_selector.currentText()
+        distribution = self.dlg.distribution.currentText()
+
+        if plot_format == "rectangle":
+            # Para o formato 'rectangle', é necessário que os valores X e Y sejam preenchidos e diferentes de zero
+            is_x_filled = self.dlg.custom_plot_format_x_value.value() > 0
+            is_y_filled = self.dlg.custom_plot_format_y_value.value() > 0
+            is_valid = is_shp_selected and is_x_filled and is_y_filled
+            if distribution == "systematic custom":
+                # Para a distribuição 'systematic custom', os valores X e Y devem ser preenchidos e diferentes de zero
+                is_x_filled = self.dlg.systematic_custom_x_d.value() > 0
+                is_y_filled = self.dlg.systematic_custom_y_d.value() > 0
+                # Exigir 'plot_area' se o formato não for 'rectangle'
+                is_plot_area_filled = plot_format == "rectangle" or self.dlg.plot_area.value() > 0
+                is_valid = is_shp_selected and is_x_filled and is_y_filled and is_plot_area_filled
+        elif distribution == "systematic custom":
+            # Para a distribuição 'systematic custom', os valores X e Y devem ser preenchidos e diferentes de zero
+            is_x_filled = self.dlg.systematic_custom_x_d.value() > 0
+            is_y_filled = self.dlg.systematic_custom_y_d.value() > 0
+            # Exigir 'plot_area' se o formato não for 'rectangle'
+            is_plot_area_filled = plot_format == "rectangle" or self.dlg.plot_area.value() > 0
+            is_valid = is_shp_selected and is_x_filled and is_y_filled and is_plot_area_filled
+        else:
+            # Para outros formatos, o campo 'plot_area' é necessário
+            is_plot_area_filled = self.dlg.plot_area.value() > 0
+            is_sample_number_filled = self.dlg.sample_number.value() > 0 if self.dlg.sample_number.isEnabled() else True
+            is_valid = is_shp_selected and is_plot_area_filled and is_sample_number_filled
+
+        self.dlg.button_box.button(QDialogButtonBox.Ok).setEnabled(is_valid)
 
     def update_sample_number_state(self):
         """Ativa ou desativa o campo sample_number dependendo da distribuição selecionada."""
         distribution = self.dlg.distribution.currentText()
-        if distribution == "systematic":
+        if distribution == "systematic" or distribution == "systematic custom":
             self.dlg.sample_number.setEnabled(False)
         else:
             self.dlg.sample_number.setEnabled(True)
 
     def update_systematic_custom_parameters_state(self):
         """Enable or disable systematic custom parameters based on the distribution type."""
-        is_custom_systematic = self.dlg.distribution.currentText() == "systematic - custom"
+        is_custom_systematic = self.dlg.distribution.currentText() == "systematic custom"
         self.dlg.systematic_custom_x_d.setEnabled(is_custom_systematic)
         self.dlg.systematic_custom_y_d.setEnabled(is_custom_systematic)
         self.dlg.systematic_custom_x_label.setEnabled(is_custom_systematic)
         self.dlg.systematic_custom_y_label.setEnabled(is_custom_systematic)
         self.dlg.systematic_custom_title.setEnabled(is_custom_systematic)
+        self.dlg.systematic_custom_degree_label.setEnabled(is_custom_systematic)
+        self.dlg.systematic_custom_degree.setEnabled(is_custom_systematic)
 
     def update_rectangle_plot_format_parameters_state(self):
         is_custom_plot_format = self.dlg.plot_format_selector.currentText() == "rectangle"
@@ -774,13 +859,13 @@ class PlotAlocation:
         if self.first_start:
             self.first_start = False
             self.dlg = PlotAlocationDialog()
-            self.dlg.distribution.addItems(["random", "best sampling", "systematic"])
+            self.dlg.distribution.addItems(["random", "best sampling", "systematic", "systematic custom"])
 
             # Define o botão de rádio "Sul" como selecionado por padrão
             self.dlg.radio_button_south.setChecked(True)
 
             # Initialize the plot_format_selector options
-            self.dlg.plot_format_selector.addItems(["round", "squared","rectangle"])
+            self.dlg.plot_format_selector.addItems(["round", "squared", "rectangle"])
 
             # Connect the dialog's finished signal to a method that sets dialog_open to False
             self.dlg.finished.connect(self.on_dialog_closed)
@@ -810,9 +895,17 @@ class PlotAlocation:
 
         self.dlg.distribution.currentIndexChanged.connect(self.update_sample_number_state)
         self.dlg.distribution.currentIndexChanged.connect(self.update_systematic_custom_parameters_state)
+        self.dlg.plot_format_selector.currentIndexChanged.connect(self.update_systematic_custom_parameters_state)
+        self.dlg.distribution.currentIndexChanged.connect(self.update_rectangle_plot_format_parameters_state)
         self.dlg.plot_format_selector.currentIndexChanged.connect(self.update_rectangle_plot_format_parameters_state)
         self.dlg.distribution.currentIndexChanged.connect(self.update_ok_button_state)
         self.dlg.plot_format_selector.currentIndexChanged.connect(self.update_ok_button_state)
+        self.dlg.custom_plot_format_x_value.valueChanged.connect(self.update_ok_button_state)
+        self.dlg.custom_plot_format_y_value.valueChanged.connect(self.update_ok_button_state)
+        self.dlg.custom_plot_format_y_value.valueChanged.connect(self.update_systematic_custom_parameters_state)
+        self.dlg.custom_plot_format_x_value.valueChanged.connect(self.update_systematic_custom_parameters_state)
+        self.dlg.systematic_custom_x_d.valueChanged.connect(self.update_ok_button_state)
+        self.dlg.systematic_custom_y_d.valueChanged.connect(self.update_ok_button_state)
 
         self.update_ok_button_state()
         self.update_sample_number_state()
@@ -831,6 +924,7 @@ class PlotAlocation:
                     self.custom_plot_format_y_value = float(
                         self.dlg.custom_plot_format_y_value.value())
                     self.plot_area = self.custom_plot_format_x_value * self.custom_plot_format_y_value
+
                 if self.plot_area <= 0:
                     raise ValueError("Plot area must be greater than zero.")
                 QgsMessageLog.logMessage(f"Plot Area: {self.plot_area}", 'Your Plugin Name', Qgis.Info)
@@ -866,12 +960,14 @@ class PlotAlocation:
                     point_layer = self._generate_random_sample_points(self.shp_layer, self.plot_area)
                 elif self.distribution == "systematic":
                     point_layer = self._generate_systematic_sample_points(self.shp_layer, self.plot_area)
-                elif self.distribution == "systematic - hexagonal":
-                    point_layer = self._generate_hexagonal_sample_points(self.shp_layer, self.plot_area)
                 elif self.distribution == "best sampling":
                     point_layer = self._generate_systematic_best_sampling_sample_points(self.shp_layer, self.plot_area)
-                elif self.distribution == "systematic - custom":
-                    point_layer = self._generate_custom_systematic_sample_points(self.shp_layer, self.plot_area)
+                elif self.distribution == "systematic custom":
+                    self.systematic_custom_x_d = self.dlg.systematic_custom_x_d.value()
+                    self.systematic_custom_y_d = self.dlg.systematic_custom_y_d.value()
+                    self.systematic_custom_degree = self.dlg.systematic_custom_degree.value()
+
+                    point_layer = self._generate_systematic_custom_sample_points(self.shp_layer, self.plot_area)
                 else:
                     QMessageBox.warning(self.dlg, "Aviso", "Distribuição não suportada.")
                     return
@@ -891,8 +987,6 @@ class PlotAlocation:
                                 options
                             )
                             if error[0] == QgsVectorFileWriter.NoError:
-                                QgsMessageLog.logMessage("Point layer saved successfully.", 'Your Plugin Name', Qgis.Info)
-                                layer_name = f"Sample points ({self.distribution})"
                                 saved_layer = QgsVectorLayer(output_path, layer_name, "ogr")
                                 if saved_layer.isValid():
                                     QgsProject.instance().addMapLayer(saved_layer)
@@ -911,7 +1005,6 @@ class PlotAlocation:
                             QMessageBox.critical(self.dlg, "Erro", "Output directory does not exist.")
                             return
                     else:
-                        layer_name = f"Sample points ({self.distribution})"
                         QgsProject.instance().addMapLayer(point_layer)
 
                         if self.buffer_check_box:
