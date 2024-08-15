@@ -295,6 +295,9 @@
    <property name="text">
     <string>Create buffer for plots</string>
    </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
   </widget>
   <widget class="QLabel" name="systematic_custom_title">
    <property name="enabled">
