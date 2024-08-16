@@ -47,6 +47,7 @@ from qgis.gui import QgsMessageBar
 import shapely
 import pandas as pd
 from shapely.affinity import rotate
+from shapely.geometry import MultiPolygon
 
 class PlotAlocation:
     """QGIS Plugin Implementation."""
@@ -187,6 +188,7 @@ class PlotAlocation:
             self.dlg.epsg_selector.setCurrentIndex(index)
 
     def open_vector(self):
+
         """Caixa de diálogo para carregar vetores locais"""
         selected_layer, _ = QFileDialog.getOpenFileName(caption="Select layer",
                                                         filter="Shapefiles (*.shp)")
@@ -212,6 +214,7 @@ class PlotAlocation:
             return None
 
     def set_input_layer(self):
+
         """Obter a layer definida no combobox shp e verificar se o CRS é conhecido."""
         layer = None
         layer_name = self.dlg.shp.currentText()
@@ -459,6 +462,7 @@ class PlotAlocation:
 
     # =================================================
     """Best alocation"""
+
     def _generate_systematic_best_sampling_sample_points(self):
         valid_points = self.create_all_possible_points()
 
@@ -476,30 +480,59 @@ class PlotAlocation:
 
         # Iterando sobre as feições no QgsVectorLayer
         for feature in self.reduced_shp.getFeatures():
-            polygon = feature.geometry().asPolygon()
             num_parcelas = feature['plots']
 
-            # Verifica se a geometria está correta
-            if not polygon:
+            if num_parcelas <= 0:
                 continue
 
-            # Convertendo a geometria para um objeto shapely
-            polygon = shapely.geometry.Polygon(polygon[0])
+            geometry = feature.geometry()
 
-            points_within_polygon = points_gdf[points_gdf.within(polygon)]
+            # Verifica se a geometria é um multipolígono
+            if geometry.isMultipart():
+                polygons = geometry.asMultiPolygon()
+            else:
+                polygons = [geometry.asPolygon()]
 
-            if len(points_within_polygon) <= num_parcelas:
-                final_points.append(points_within_polygon)
-                continue
+            for polygon in polygons:
+                if not polygon:
+                    continue
 
-            # Use k-means to find the best cluster centers
-            kmeans = KMeans(n_clusters=num_parcelas, random_state=0).fit(
-                np.array(list(points_within_polygon.geometry.apply(lambda point: (point.x, point.y))))
-            )
+                # Convertendo a geometria para um objeto shapely
+                shapely_polygon = shapely.geometry.Polygon(polygon[0])
 
-            selected_points = gpd.GeoDataFrame(geometry=[shapely.geometry.Point(xy) for xy in kmeans.cluster_centers_],
-                                               crs=points_gdf.crs)
-            final_points.append(selected_points)
+                points_within_polygon = points_gdf[points_gdf.within(shapely_polygon)]
+
+                if len(points_within_polygon) <= num_parcelas:
+                    final_points.append(points_within_polygon)
+                    continue
+
+                # Use k-means to find the best cluster centers
+                kmeans = KMeans(n_clusters=num_parcelas, random_state=0).fit(
+                    np.array(list(points_within_polygon.geometry.apply(lambda point: (point.x, point.y))))
+                )
+
+                selected_points = gpd.GeoDataFrame(
+                    geometry=[shapely.geometry.Point(xy) for xy in kmeans.cluster_centers_],
+                    crs=points_gdf.crs)
+                final_points.append(selected_points)
+
+        QgsMessageLog.logMessage(f"--FINAL POINTS-- : {len(final_points)}.", 'Your Plugin Name',
+                                 Qgis.Info)
+        total_parcelas = sum(len(points) for points in final_points)
+
+        if total_parcelas > self.max_number_of_points:
+            # Remover parcelas em final_points até que atinja o número de self.max_number_of_points
+            excess_parcelas = total_parcelas - self.max_number_of_points
+
+            # Flatten the list of GeoDataFrames into a single GeoDataFrame for easier manipulation
+            all_points_gdf = gpd.GeoDataFrame(pd.concat(final_points, ignore_index=True), crs=self.crs)
+
+            # Amostra aleatoriamente pontos suficientes para atingir self.max_number_of_points
+            sampled_points_gdf = all_points_gdf.sample(n=int(self.max_number_of_points), random_state=0).reset_index(
+                drop=True)
+
+            # Reassign the sampled points back to final_points as a list of GeoDataFrames
+            final_points = [sampled_points_gdf]
 
         final_points_gdf = self.create_point_layer(final_points, self.crs)
 
@@ -826,6 +859,7 @@ class PlotAlocation:
     def initGui(self):
         """Create the menu entries and toolbar icons inside the QGIS GUI."""
 
+
         icon_path = ':/plugins/plot_alocation/icon.png'
         self.add_action(
             icon_path,
@@ -911,6 +945,7 @@ class PlotAlocation:
 
 
     def run(self):
+        iface.messageBar().pushMessage("Atention", "Large areas may take some time to compute...", level=Qgis.Info)
         """Run method that performs all the real work"""
         if self.dialog_open:  # Check if the dialog is already open
             QMessageBox.warning(self.iface.mainWindow(), "Plugin Already Open", "The plugin is already open.")
@@ -992,6 +1027,7 @@ class PlotAlocation:
                 self.plot_area = self.custom_plot_format_x_value * self.custom_plot_format_y_value
 
             self.reduced_shp = self.get_reduced_polygons_to_min_border_distance(self.shp_layer)
+
             self.reduced_shp_total_area = self.calculate_total_area(self.reduced_shp)
 
             if not self.shp_layer:
@@ -1008,9 +1044,9 @@ class PlotAlocation:
                 else:
                     self.max_number_of_points = self.sample_number
 
+                """CRIAÇÃO DAS PARCELAS PROPORCIONAIS POR TALHAO"""
                 # Inicializa as listas para armazenar os resultados
                 area_prop_list = []
-                plots_list = []
 
                 # Itera sobre as feições da camada
                 for feature in self.reduced_shp.getFeatures():
@@ -1021,10 +1057,34 @@ class PlotAlocation:
                     area_prop = area / self.reduced_shp_total_area
                     area_prop_list.append(area_prop)
 
-                    # Calcula o número de parcelas
-                    parcelas = np.ceil(area_prop * self.max_number_of_points).astype(int)
-                    plots_list.append(parcelas)
+                # Calcula o número de parcelas proporcional à área para cada talhão
+                plots_list = np.array(area_prop_list) * self.max_number_of_points
 
+                # Arredonda para o inteiro mais próximo e soma as parcelas para ajustar
+                plots_list = np.round(plots_list).astype(int)
+
+                # Ajusta o número de parcelas para garantir que a soma seja igual a max_number_of_points
+                difference = self.max_number_of_points - plots_list.sum()
+
+                # Distribui a diferença para corrigir a soma
+                while difference != 0:
+                    if difference > 0:
+                        # Adiciona parcelas, uma por uma, começando pelas maiores proporções
+                        for i in np.argsort(-np.array(area_prop_list)):
+                            plots_list[i] += 1
+                            difference = self.max_number_of_points - plots_list.sum()
+                            if difference == 0:
+                                break
+                    elif difference < 0:
+                        # Remove parcelas, uma por uma, começando pelas menores proporções
+                        for i in np.argsort(np.array(area_prop_list)):
+                            if plots_list[i] > 0:  # Garantir que não removemos de talhões que já têm 0 parcelas
+                                plots_list[i] -= 1
+                                difference = self.max_number_of_points - plots_list.sum()
+                                if difference == 0:
+                                    break
+
+                """FIM CRIAÇÃO DAS PARCELAS PROPORCIONAIS POR TALHAO"""
                 # Adiciona os novos atributos à tabela de atributos, se ainda não existirem
                 if self.reduced_shp.fields().indexFromName('area_prop') == -1:
                     self.reduced_shp.dataProvider().addAttributes([QgsField('area_prop', QVariant.Double)])
@@ -1044,10 +1104,8 @@ class PlotAlocation:
                     self.reduced_shp.changeAttributeValue(feature.id(),
                                                           self.reduced_shp.fields().indexFromName('plots'),
                                                           int(plots_list[i]))
-                QgsMessageLog.logMessage(f"parcelas_list: {plots_list}", 'Your Plugin Name', Qgis.Info)
                 # Confirma as alterações
                 self.reduced_shp.commitChanges()
-
 
 
                 if self.sample_number < 0:
