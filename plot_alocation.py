@@ -21,27 +21,33 @@
  *                                                                         *
  ***************************************************************************/
 """
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
+from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, QVariant
 from qgis.PyQt.QtGui import QIcon
+from qgis.utils import iface
 from qgis.PyQt.QtWidgets import QAction, QFileDialog, QDialogButtonBox
 from qgis.core import *
-from PyQt5.QtWidgets import QMessageBox
-# Initialize Qt resources from file resources.py
+from PyQt5.QtWidgets import QMessageBox, QProgressDialog
 from .resources import *
-# Import the code for the dialog
 from .plot_alocation_dialog import PlotAlocationDialog
+from sklearn.cluster import KMeans
 import os.path
 import processing
 import sys
 import os
+import random
 from osgeo import ogr
 import geopandas as gpd
-from shapely.geometry import Point
+from shapely.geometry import shape, mapping, GeometryCollection, Point, Polygon
+from shapely.ops import unary_union
+from shapely import wkt
 import math
 import numpy as np
 import traceback
-from shapely.geometry import shape, mapping, GeometryCollection
-
+from qgis.gui import QgsMessageBar
+import shapely
+import pandas as pd
+from shapely.affinity import rotate
+from shapely.geometry import MultiPolygon
 
 class PlotAlocation:
     """QGIS Plugin Implementation."""
@@ -79,17 +85,40 @@ class PlotAlocation:
         self.first_start = None
         self.select_button_connected = False
         self.select_save_button_connected = False
+        self.dialog_open = False
 
-    def update_ok_button_state(self):
-        """Ativa o botão OK se todos os campos obrigatórios estiverem preenchidos."""
-        is_shp_selected = bool(self.dlg.shp.currentText())
-        is_output_name_filled = bool(self.dlg.output_name.text())
-        is_plot_area_filled = self.dlg.plot_area.value() > 0
-        is_sample_number_filled = self.dlg.sample_number.value() > 0
+    def get_reduced_polygons_to_min_border_distance(self, layer):
+        """
+        Essa função cria uma versão dos polígonos que seja menor que `min_border_distance` do que os polígonos reais,
+        considerando a distância de borda. Se o polígono reduzido ficar inválido ou muito pequeno, ele será excluído.
+        """
+        reduced_polygons = []
 
-        self.dlg.button_box.button(QDialogButtonBox.Ok).setEnabled(
-            is_shp_selected and is_output_name_filled and is_plot_area_filled and is_sample_number_filled
-        )
+        for feature in layer.getFeatures():
+            geom = feature.geometry()
+            shapely_geom = wkt.loads(geom.asWkt())  # Converte a string WKT para geometria Shapely
+
+            reduced_poly = shapely_geom.buffer(-self.get_distances()[0])
+            if reduced_poly.is_valid and not reduced_poly.is_empty and reduced_poly.area > 0:
+                reduced_polygons.append(reduced_poly)
+
+        # Convertendo a lista de polígonos reduzidos para GeoDataFrame
+        reduced_polygons_gdf = gpd.GeoDataFrame(geometry=reduced_polygons, crs=layer.crs().toWkt())
+
+        # Criando uma nova camada no QGIS para exibir os polígonos reduzidos
+        reduced_layer = QgsVectorLayer("Polygon?crs={}".format(layer.crs().authid()),
+                                       "Reduced Polygons", "memory")
+        provider = reduced_layer.dataProvider()
+
+        for poly in reduced_polygons_gdf.geometry:
+            feature = QgsFeature()
+            feature.setGeometry(QgsGeometry.fromWkt(poly.wkt))
+            provider.addFeature(feature)
+
+        reduced_layer.updateExtents()
+        # QgsProject.instance().addMapLayer(reduced_layer) adiciona o layer no qgis
+
+        return reduced_layer
 
     def get_selected_epsg(self):
         """Obter o EPSG selecionado pelo usuário."""
@@ -159,6 +188,7 @@ class PlotAlocation:
             self.dlg.epsg_selector.setCurrentIndex(index)
 
     def open_vector(self):
+
         """Caixa de diálogo para carregar vetores locais"""
         selected_layer, _ = QFileDialog.getOpenFileName(caption="Select layer",
                                                         filter="Shapefiles (*.shp)")
@@ -184,7 +214,8 @@ class PlotAlocation:
             return None
 
     def set_input_layer(self):
-        """Obter a layer definida no combobox shp"""
+
+        """Obter a layer definida no combobox shp e verificar se o CRS é conhecido."""
         layer = None
         layer_name = self.dlg.shp.currentText()
         for layer_ in QgsProject.instance().mapLayers().values():
@@ -194,6 +225,12 @@ class PlotAlocation:
 
         if not layer:
             QgsMessageLog.logMessage("Layer not found", 'Your Plugin Name', Qgis.Critical)
+            return None
+
+        # Verificar se o CRS do layer é desconhecido
+        if not layer.crs().isValid() or layer.crs().authid() == '':
+            QMessageBox.warning(self.iface.mainWindow(), "Unknown CRS",
+                                "The selected layer's CRS is unknown. Please set a valid CRS before proceeding.")
             return None
 
         QgsMessageLog.logMessage(f"Selected Layer CRS: {layer.crs().authid()}", 'Your Plugin Name', Qgis.Info)
@@ -231,8 +268,8 @@ class PlotAlocation:
         self.total_area = self.calculate_total_area(transformed_layer)
         QgsMessageLog.logMessage(f"Total Area: {self.total_area}", 'Your Plugin Name', Qgis.Info)
 
-        return transformed_layer
 
+        return transformed_layer
 
     def calculate_total_area(self, layer):
         """Calcular a área total dos polígonos no layer fornecido"""
@@ -243,25 +280,125 @@ class PlotAlocation:
             total_area += area
         return total_area
 
-    def _check_points_distance(self, point, plot_area, existing_points):
-        """Check if the point is at a valid distance from existing points and polygon boundaries."""
-        radius = math.sqrt(plot_area / math.pi)
-        for existing_point in existing_points:
-            distance = point.distance(existing_point)
-            if distance < radius * 2:
-                return False
+    def _check_rectangle(self, point, existing_points, width, height):
+        """
+        Verifica se um retângulo centrado em 'point' é válido.
 
-        # Check distance between point and each polygon boundary
+        :param point: QgsGeometry centrada no ponto do retângulo.
+        :param existing_points: Lista de QgsGeometry dos centros dos retângulos existentes.
+        :param width: Largura do retângulo.
+        :param height: Altura do retângulo.
+        :return: True se o retângulo estiver completamente contido em uma feature, não intersectar nenhum retângulo existente, e estiver a pelo menos self.min_border_distance dos limites dos polígonos. False caso contrário.
+        """
+        point_ = point.asPoint()
+
+        half_width = width / 2
+        half_height = height / 2
+
+        # Define os cantos do retângulo ao redor do ponto central
+        rectangle_points = [
+            QgsPointXY(point_.x() - half_width, point_.y() - half_height),
+            QgsPointXY(point_.x() + half_width, point_.y() - half_height),
+            QgsPointXY(point_.x() + half_width, point_.y() + half_height),
+            QgsPointXY(point_.x() - half_width, point_.y() + half_height),
+            QgsPointXY(point_.x() - half_width, point_.y() - half_height)  # Fecha o polígono
+        ]
+
+        # Cria a geometria do retângulo como um polígono
+        rectangle_geom = QgsGeometry.fromPolygonXY([rectangle_points])
+
+        # Verifica se o retângulo está completamente dentro de pelo menos uma feature na camada
         for feature in self.shp_layer.getFeatures():
-            geom = feature.geometry()
-            if geom:
-                shapely_geom = shape(mapping(geom))  # Convert QGIS geometry to shapely
-                boundary = shapely_geom.boundary  # Get shapely geometry boundary
-                distance_to_boundary = point.distance(
-                    QgsGeometry.fromWkt(boundary.wkt))  # Convert back to QGIS geometry
-                if distance_to_boundary < (self.min_border_distance + radius):
+            feature_geom = feature.geometry()
+
+            # Buffer negativo da feature para garantir distância mínima dos limites
+            buffered_feature_geom = feature_geom.buffer(-self.min_border_distance, 1)
+
+            contains_all_points = all(
+                buffered_feature_geom.contains(QgsGeometry.fromPointXY(pt)) for pt in rectangle_points)
+
+            if contains_all_points:
+                # Verifica se o retângulo não intersecta nenhum retângulo dos existing_points
+                for existing_point in existing_points:
+                    existing_point_ = existing_point.asPoint()
+                    existing_rectangle_points = [
+                        QgsPointXY(existing_point_.x() - half_width, existing_point_.y() - half_height),
+                        QgsPointXY(existing_point_.x() + half_width, existing_point_.y() - half_height),
+                        QgsPointXY(existing_point_.x() + half_width, existing_point_.y() + half_height),
+                        QgsPointXY(existing_point_.x() - half_width, existing_point_.y() + half_height),
+                        QgsPointXY(existing_point_.x() - half_width, existing_point_.y() - half_height)
+                        # Fecha o polígono
+                    ]
+                    existing_rectangle_geom = QgsGeometry.fromPolygonXY([existing_rectangle_points])
+                    if rectangle_geom.intersects(existing_rectangle_geom):
+                        return False  # Se intersecta com um retângulo existente, é inválido
+
+                return True  # Se está contido em uma feature e não intersecta retângulos existentes, é válido
+
+        return False
+    def _check_points_distance(self, point, plot_area, existing_points, buffer_type):
+        """Check if the point is at a valid distance from existing points and polygon boundaries."""
+        if buffer_type == "round":
+            radius = math.sqrt(plot_area / math.pi)
+            for existing_point in existing_points:
+                distance = point.distance(existing_point)
+                if distance < radius * 2:
                     return False
+            for feature in self.shp_layer.getFeatures():
+                geom = feature.geometry()
+                if geom:
+                    shapely_geom = shape(mapping(geom))  # Convert QGIS geometry to shapely
+                    boundary = shapely_geom.boundary  # Get shapely geometry boundary
+                    distance_to_boundary = point.distance(
+                        QgsGeometry.fromWkt(boundary.wkt))  # Convert back to QGIS geometry
+                    if distance_to_boundary < (self.get_distances()[0]):
+                        return False
+        elif buffer_type == "squared":
+            # Calculate half the side length of the square
+            half_side = math.sqrt(plot_area) / 2
+            point_x, point_y = point.asPoint().x(), point.asPoint().y()
+
+            # Define the bounds of the square
+            min_x, min_y = point_x - half_side, point_y - half_side
+            max_x, max_y = point_x + half_side, point_y + half_side
+
+            for existing_point in existing_points:
+                existing_x, existing_y = existing_point.asPoint().x(), existing_point.asPoint().y()
+                existing_min_x, existing_min_y = existing_x - half_side, existing_y - half_side
+                existing_max_x, existing_max_y = existing_x + half_side, existing_y + half_side
+
+                # Check if the squares overlap
+                if not (
+                        min_x >= existing_max_x or max_x <= existing_min_x or min_y >= existing_max_y or max_y <= existing_min_y):
+                    return False
+
+            # Check distance between point and each polygon boundary
+            for feature in self.shp_layer.getFeatures():
+                geom = feature.geometry()
+                if geom:
+                    shapely_geom = shape(mapping(geom))  # Convert QGIS geometry to shapely
+                    boundary = shapely_geom.boundary  # Get shapely geometry boundary
+                    distance_to_boundary = point.distance(
+                        QgsGeometry.fromWkt(boundary.wkt))  # Convert back to QGIS geometry
+                    if distance_to_boundary < (self.get_distances()[0]):
+                        return False
+        elif buffer_type == "rectangle":
+            rect_width = self.custom_plot_format_x_value
+            rect_height = self.custom_plot_format_y_value
+            return self._check_rectangle(point, existing_points, rect_width,rect_height)
         return True
+
+    def get_distances(self):
+        """obtem a distancia que os pontos devem manter da borda e também a distancia que um ponto deve ter de outro"""
+        if self.plot_format == 'round':
+            add_value = math.sqrt(self.plot_area/math.pi) * 2
+        if self.plot_format == 'squared':
+            add_value = (math.sqrt(self.plot_area))
+        if self.plot_format == 'rectangle':
+            add_value = math.sqrt((self.custom_plot_format_x_value/2) ** 2 + (self.custom_plot_format_y_value ** 2))
+        distance_from_each_other = add_value
+        distance_from_border = self.min_border_distance + add_value
+        return distance_from_border, distance_from_each_other
 
     def _check_point_within_polygons(self, point, layer):
         """Check if a point is within any polygons of the layer."""
@@ -270,17 +407,145 @@ class PlotAlocation:
                 return True
         return False
 
+    def create_all_possible_points(self, with_index_flag=False):
+        """Essa função cria todos os pontos possíveis, de acordo com grid_spacing.
+        Se with_index_flag==True, retorna uma lista de tuplas contendo o número do polígono e as coordenadas do ponto.
+        Se with_index_flag==False, retorna apenas a lista de geometrias de pontos."""
+
+        # Obtém a extensão (bounding box) da camada
+        layer_extent = self.reduced_shp.extent()
+
+        x_min = layer_extent.xMinimum()
+        y_min = layer_extent.yMinimum()
+        x_max = layer_extent.xMaximum()
+        y_max = layer_extent.yMaximum()
+
+        if not (np.isfinite(x_min) and np.isfinite(y_min) and np.isfinite(y_max) and np.isfinite(y_max)):
+            print("Extensão do layer contém valores infinitos ou NaN.")
+            return None
+
+        if x_min >= x_max or y_min >= y_max:
+            print("Intervalo de valores de x ou y inválido.")
+            return None
+
+        # Obtém a distância que uma parcela deve ter da outra
+        grid_spacing = self.get_distances()[1]
+        QgsMessageLog.logMessage(f"GRID SPACING: {grid_spacing}", 'Your Plugin Name', Qgis.Info)
+        valid_points = []
+
+        x_coords = np.arange(x_min + grid_spacing / 2, x_max, grid_spacing)
+        y_coords = np.arange(y_min + grid_spacing / 2, y_max, grid_spacing)
+
+        if with_index_flag:
+            for x in x_coords:
+                for y in y_coords:
+                    point = QgsPointXY(x, y)
+                    point_geom = QgsGeometry.fromPointXY(point)
+                    for index, poly in enumerate(self.reduced_shp.getFeatures()):
+                        geom = poly.geometry()
+                        if geom.contains(point_geom):
+                            valid_points.append(
+                                (index, point_geom))  # Salva o índice do polígono junto com a geometria do ponto
+                            break
+        else:
+            for x in x_coords:
+                for y in y_coords:
+                    point = QgsPointXY(x, y)
+                    point_geom = QgsGeometry.fromPointXY(point)
+                    for poly in self.reduced_shp.getFeatures():
+                        geom = poly.geometry()
+                        if geom.contains(point_geom):
+                            valid_points.append(point_geom)
+            return valid_points
+
+        return valid_points
+
+    # =================================================
+    """Best alocation"""
+
+    def _generate_systematic_best_sampling_sample_points(self):
+        valid_points = self.create_all_possible_points()
+
+        if len(valid_points) < self.max_number_of_points:
+            QMessageBox.warning(self.dlg, "Warning!",
+                                "Unable to generate plots with the established criteria. Only the possible plots were generated.")
+            return valid_points
+
+        QgsMessageLog.logMessage(f"self.shp_layer.crs= {self.shp_layer.crs}", 'Your Plugin Name',
+                                 Qgis.Critical)
+
+        points_gdf = gpd.GeoDataFrame(geometry=valid_points, crs=self.crs)
+
+        final_points = []
+
+        # Iterando sobre as feições no QgsVectorLayer
+        for feature in self.reduced_shp.getFeatures():
+            num_parcelas = feature['plots']
+
+            if num_parcelas <= 0:
+                continue
+
+            geometry = feature.geometry()
+
+            # Verifica se a geometria é um multipolígono
+            if geometry.isMultipart():
+                polygons = geometry.asMultiPolygon()
+            else:
+                polygons = [geometry.asPolygon()]
+
+            for polygon in polygons:
+                if not polygon:
+                    continue
+
+                # Convertendo a geometria para um objeto shapely
+                shapely_polygon = shapely.geometry.Polygon(polygon[0])
+
+                points_within_polygon = points_gdf[points_gdf.within(shapely_polygon)]
+
+                if len(points_within_polygon) <= num_parcelas:
+                    final_points.append(points_within_polygon)
+                    continue
+
+                # Use k-means to find the best cluster centers
+                kmeans = KMeans(n_clusters=num_parcelas, random_state=0).fit(
+                    np.array(list(points_within_polygon.geometry.apply(lambda point: (point.x, point.y))))
+                )
+
+                selected_points = gpd.GeoDataFrame(
+                    geometry=[shapely.geometry.Point(xy) for xy in kmeans.cluster_centers_],
+                    crs=points_gdf.crs)
+                final_points.append(selected_points)
+
+        QgsMessageLog.logMessage(f"--FINAL POINTS-- : {len(final_points)}.", 'Your Plugin Name',
+                                 Qgis.Info)
+        total_parcelas = sum(len(points) for points in final_points)
+
+        if total_parcelas > self.max_number_of_points:
+            # Remover parcelas em final_points até que atinja o número de self.max_number_of_points
+            excess_parcelas = total_parcelas - self.max_number_of_points
+
+            # Flatten the list of GeoDataFrames into a single GeoDataFrame for easier manipulation
+            all_points_gdf = gpd.GeoDataFrame(pd.concat(final_points, ignore_index=True), crs=self.crs)
+
+            # Amostra aleatoriamente pontos suficientes para atingir self.max_number_of_points
+            sampled_points_gdf = all_points_gdf.sample(n=int(self.max_number_of_points), random_state=0).reset_index(
+                drop=True)
+
+            # Reassign the sampled points back to final_points as a list of GeoDataFrames
+            final_points = [sampled_points_gdf]
+
+        final_points_gdf = self.create_point_layer(final_points, self.crs)
+
+        return final_points_gdf
+    """FIM best alocation"""
+    #=================================================
     """Distribuição randomica"""
     def _generate_random_sample_points(self, shp, plot_area, max_attempts=3000):
-        QgsMessageLog.logMessage(f"sample number : {self.sample_number}", 'Your Plugin Name',
-                                 Qgis.Critical)
         if self.sample_number < 1:
-            max_number_of_points = math.ceil((self.sample_number * self.total_area)/plot_area)
+            max_number_of_points = math.ceil((self.sample_number * self.total_area) / plot_area)
         else:
             max_number_of_points = self.sample_number
 
-        QgsMessageLog.logMessage(f"max n points: {max_number_of_points}", 'Your Plugin Name',
-                                 Qgis.Critical)
         extent = shp.extent()
         x_min, y_min, x_max, y_max = extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()
 
@@ -308,10 +573,9 @@ class PlotAlocation:
 
             point = QgsGeometry.fromPointXY(QgsPointXY(x, y))
             transformed_point = self.transform_to_layer_crs(point, source_crs, target_crs)
-
             if transformed_point is not None and self._check_point_within_polygons(transformed_point,
                                                                                    shp) and self._check_points_distance(
-                    transformed_point, plot_area, valid_points):
+                    transformed_point, plot_area, valid_points,self.plot_format):
                 valid_points.append(transformed_point)
 
             attempts += 1
@@ -327,159 +591,138 @@ class PlotAlocation:
             QgsMessageLog.logMessage("Não foi possível gerar parcelas com os critérios estabelecidos.",
                                      'Your Plugin Name', Qgis.Critical)
             return None
+    """FIM distribuição randomica"""
+    #=====================================================================================
     """Distribuição sistematica"""
-
     def _generate_systematic_sample_points(self, shp, plot_area):
-        extent = shp.extent()
-        x_min, y_min, x_max, y_max = extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()
+        valid_points = self.create_all_possible_points()
 
-        if not (np.isfinite(x_min) and np.isfinite(y_min) and np.isfinite(x_max) and np.isfinite(y_max)):
-            QgsMessageLog.logMessage("Extensão do layer contém valores infinitos ou NaN.", 'Your Plugin Name',
-                                     Qgis.Critical)
-            return None
-
-        if x_min >= x_max or y_min >= y_max:
-            QgsMessageLog.logMessage("Intervalo de valores de x ou y inválido.", 'Your Plugin Name', Qgis.Critical)
-            return None
-
-        grid_spacing = math.sqrt(plot_area)
-        x_coords = np.arange(x_min, x_max, grid_spacing)
-        y_coords = np.arange(y_min, y_max, grid_spacing)
-
-        valid_points = []
-
-        for x in x_coords:
-            for y in y_coords:
-                point = QgsGeometry.fromPointXY(QgsPointXY(x, y))
-                if self._check_point_within_polygons(point, shp) and self._check_points_distance(point, plot_area,
-                                                                                                 valid_points):
-                    valid_points.append(point)
-
-        if len(valid_points) < self.sample_number:
-            QMessageBox.warning(self.dlg, "Aviso",
-                                "Não foi possível gerar todas as parcelas com os critérios estabelecidos.")
-
-        if valid_points:
-            point_layer = self.create_point_layer(valid_points, shp.crs())
-            return point_layer
-        else:
-            QgsMessageLog.logMessage("Não foi possível gerar parcelas com os critérios estabelecidos.",
-                                     'Your Plugin Name', Qgis.Critical)
-            return None
-
-    """Implementação da Grade Hexagonal"""
-
-    def _generate_hexagonal_sample_points(self, shp, plot_area):
-        extent = shp.extent()
-        x_min, y_min, x_max, y_max = extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()
-
-        if not (np.isfinite(x_min) and np.isfinite(y_min) and np.isfinite(x_max) and np.isfinite(y_max)):
-            QgsMessageLog.logMessage("Extensão do layer contém valores infinitos ou NaN.", 'Your Plugin Name',
-                                     Qgis.Critical)
-            return None
-
-        if x_min >= x_max or y_min >= y_max:
-            QgsMessageLog.logMessage("Intervalo de valores de x ou y inválido.", 'Your Plugin Name', Qgis.Critical)
-            return None
-
-        radius = math.sqrt((2 * plot_area) / (3 * math.sqrt(3)))
-        x_spacing = radius * 3 / 2
-        y_spacing = radius * math.sqrt(3)
-
-        valid_points = []
-
-        y = y_min
-        row = 0
-        while y <= y_max:
-            x = x_min + (row % 2) * radius * 3 / 2
-            while x <= x_max:
-                point = QgsGeometry.fromPointXY(QgsPointXY(x, y))
-                if self._check_point_within_polygons(point, shp) and self._check_points_distance(point, plot_area,
-                                                                                                 valid_points):
-                    valid_points.append(point)
-                x += x_spacing
-            y += y_spacing
-            row += 1
-
-        if len(valid_points) < self.sample_number:
-            QMessageBox.warning(self.dlg, "Aviso",
-                                "Não foi possível gerar todas as parcelas com os critérios estabelecidos.")
-
-        if valid_points:
-            point_layer = self.create_point_layer(valid_points, shp.crs())
-            return point_layer
-        else:
-            QgsMessageLog.logMessage("Não foi possível gerar parcelas com os critérios estabelecidos.",
-                                     'Your Plugin Name', Qgis.Critical)
-            return None
-
-    """Implementação da Rotação da Grade"""
-
-    def _generate_rotated_sample_points(self, shp, plot_area, angle=30):
-        extent = shp.extent()
-        x_min, y_min, x_max, y_max = extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()
-
-        if not (np.isfinite(x_min) and np.isfinite(y_min) and np.isfinite(x_max) and np.isfinite(y_max)):
-            QgsMessageLog.logMessage("Extensão do layer contém valores infinitos ou NaN.", 'Your Plugin Name',
-                                     Qgis.Critical)
-            return None
-
-        if x_min >= x_max or y_min >= y_max:
-            QgsMessageLog.logMessage("Intervalo de valores de x ou y inválido.", 'Your Plugin Name', Qgis.Critical)
-            return None
-
-        grid_spacing = math.sqrt(plot_area)
-        cos_angle = math.cos(math.radians(angle))
-        sin_angle = math.sin(math.radians(angle))
-
-        valid_points = []
-
-        center_x = (x_min + x_max) / 2
-        center_y = (y_min + y_max) / 2
-
-        y = y_min
-        while y <= y_max:
-            x = x_min
-            while x <= x_max:
-                x_centered = x - center_x
-                y_centered = y - center_y
-                x_rot = cos_angle * x_centered - sin_angle * y_centered + center_x
-                y_rot = sin_angle * x_centered + cos_angle * y_centered + center_y
-
-                point = QgsGeometry.fromPointXY(QgsPointXY(x_rot, y_rot))
-
-                if self._check_point_within_polygons(point, shp) and self._check_points_distance(point, plot_area,
-                                                                                                 valid_points):
-                    valid_points.append(point)
-
-                x += grid_spacing
-            y += grid_spacing
-
-        if len(valid_points) < self.sample_number:
+        valid_points = self.create_point_layer(valid_points, self.shp_layer.crs())
+        if len(valid_points) < self.max_number_of_points:
             QMessageBox.warning(self.dlg, "Warning!",
                                 "Unable to generate plots with the established criteria. Only the possible plots were generated.")
+            return valid_points
+        return valid_points
+    """FIM Distribuição sistematica"""
+    # =====================================================================================
+    """Distribuição systematic custom"""
 
-        if valid_points:
-            point_layer = self.create_point_layer(valid_points, shp.crs())
-            return point_layer
-        else:
-            QgsMessageLog.logMessage("Não foi possível gerar parcelas com os critérios estabelecidos.",
-                                     'Your Plugin Name', Qgis.Critical)
+    def _generate_systematic_custom_sample_points(self, shp, plot_area):
+        x_spacing, y_spacing, rotation_angle = self.systematic_custom_x_d, self.systematic_custom_y_d, self.systematic_custom_degree
+
+        # Extensão da camada
+        layer_extent = self.reduced_shp.extent()
+        x_min, x_max = layer_extent.xMinimum(), layer_extent.xMaximum()
+        y_min, y_max = layer_extent.yMinimum(), layer_extent.yMaximum()
+
+        if not (np.isfinite(x_min) and np.isfinite(y_min) and np.isfinite(x_max) and np.isfinite(y_max)):
+            print("Layer extent contains infinite or NaN values.")
             return None
 
+        if x_min >= x_max or y_min >= y_max:
+            print("Invalid range of x or y values.")
+            return None
+
+        # Calcular a expansão da extensão para cobrir rotação
+        center_x = (x_min + x_max) / 2
+        center_y = (y_min + y_max) / 2
+        diagonal = np.sqrt((x_max - x_min) ** 2 + (y_max - y_min) ** 2)
+        half_diagonal = diagonal / 2
+
+        x_min_expanded = center_x - half_diagonal
+        x_max_expanded = center_x + half_diagonal
+        y_min_expanded = center_y - half_diagonal
+        y_max_expanded = center_y + half_diagonal
+
+        # Geração dos pontos do grid com a extensão expandida
+        x_coords = np.arange(x_min_expanded + x_spacing / 2, x_max_expanded, x_spacing)
+        y_coords = np.arange(y_min_expanded + y_spacing / 2, y_max_expanded, y_spacing)
+
+        points = []
+        for x in x_coords:
+            for y in y_coords:
+                points.append(Point(x, y))
+
+        # Criando uma GeoDataFrame a partir dos pontos gerados
+        grid_gdf = gpd.GeoDataFrame(geometry=points, crs=self.crs)
+
+        # Rotacionando a grade
+        rotated_grid = grid_gdf.copy()
+        rotated_grid['geometry'] = [rotate(point, rotation_angle, origin=(center_x, center_y)) for point in
+                                    grid_gdf['geometry']]
+
+        # Converter a camada reduzida (reduced_shp) para GeoDataFrame
+        features = [feat for feat in self.reduced_shp.getFeatures()]
+        geometries = [feat.geometry().asWkt() for feat in features]
+        geom_gdf = gpd.GeoDataFrame(geometry=gpd.GeoSeries.from_wkt(geometries), crs=self.reduced_shp.crs().authid())
+
+        # Unificar todas as geometrias (unary_union)
+        reduced_shp_union = geom_gdf.unary_union
+
+        # Filtrando os pontos que estão dentro da forma reduzida (reduced_shp)
+        valid_points = rotated_grid[rotated_grid.intersects(reduced_shp_union)]
+
+        if not valid_points.empty:
+            # Convertendo para uma lista de QgsGeometry
+            valid_points_list = [QgsGeometry.fromWkt(geom.wkt) for geom in valid_points['geometry']]
+            valid_points_layer = self.create_point_layer(valid_points_list, self.crs)
+            return valid_points_layer
+        else:
+            print("Unable to generate plots with the established criteria.")
+            return None
+    """FIM Distribuição systematic custom"""
+
+    # =====================================================================================
     def create_point_layer(self, points, crs):
-        point_layer = QgsVectorLayer("Point?crs={}".format(crs.authid()), "Sample Points", "memory")
+        # Verifique se crs é uma string ou um objeto QgsCoordinateReferenceSystem
+        if isinstance(crs, str):
+            crs_id = crs  # Se for uma string, use diretamente
+        else:
+            crs_id = crs.authid()  # Se for um objeto QgsCoordinateReferenceSystem, use authid()
+
+        # Cria uma camada de pontos em memória
+        point_layer = QgsVectorLayer(f"Point?crs={crs_id}", "sample_points", "memory")
         pr = point_layer.dataProvider()
 
+        # Adiciona o campo "plot_n" que irá armazenar a numeração
+        pr.addAttributes([QgsField("plot_n", QVariant.Int)])
+        point_layer.updateFields()
+
         point_layer.startEditing()
-        for point in points:
-            feature = QgsFeature()
-            feature.setGeometry(point)
-            pr.addFeature(feature)
-        point_layer.commitChanges()
-        point_layer.updateExtents()
+        try:
+            plot_number = 1  # Inicializa a numeração a partir de 1
+
+            for point in points:
+                for geom in point.geometry:
+                    feature = QgsFeature()
+                    feature.setGeometry(QgsGeometry.fromWkt(geom.wkt))
+
+                    # Define o valor da numeração para o campo "plot_n"
+                    feature.setAttributes([plot_number])
+                    pr.addFeature(feature)
+
+                    plot_number += 1  # Incrementa o número para o próximo ponto
+
+            point_layer.commitChanges()
+            point_layer.updateExtents()
+        except:
+            plot_number = 1  # Reinicializa a numeração em caso de erro
+
+            for point in points:
+                feature = QgsFeature()
+                feature.setGeometry(point)
+
+                # Define o valor da numeração para o campo "plot_n"
+                feature.setAttributes([plot_number])
+                pr.addFeature(feature)
+
+                plot_number += 1  # Incrementa o número para o próximo ponto
+
+            point_layer.commitChanges()
+            point_layer.updateExtents()
 
         return point_layer
+
     ##### FIM FUNÇÕES CRIADAS #####
     # noinspection PyMethodMayBeStatic
     def tr(self, message):
@@ -583,8 +826,78 @@ class PlotAlocation:
         if output_path:
             self.dlg.output_name.setText(output_path)
 
+    def create_buffer_layer(self, point_layer, buffer_distance, buffer_type):
+        # Cria uma camada de polígonos em memória para armazenar os buffers
+        buffer_layer_name = f"{point_layer.name()}_buffer"  # Nome da camada de buffer
+        buffer_layer = QgsVectorLayer("Polygon?crs={}".format(point_layer.crs().authid()), buffer_layer_name, "memory")
+        provider = buffer_layer.dataProvider()
+
+        # Adiciona a coluna "buffer_n" para numerar os buffers
+        provider.addAttributes([QgsField("buffer_n", QVariant.Int)])
+        buffer_layer.updateFields()
+
+        # Itera sobre as feições da camada de pontos
+        for feature in point_layer.getFeatures():
+            geom = feature.geometry()
+            plot_number = feature["plot_n"]  # Captura a numeração do ponto
+
+            # Cria o buffer com base no tipo especificado
+            if buffer_type == "round":
+                buffer_geom = geom.buffer(buffer_distance, 30)  # 30 segmentos para aproximar um círculo
+            elif buffer_type == "squared":
+                # Cria um buffer quadrado
+                center = geom.asPoint()
+                x, y = center.x(), center.y()
+                half_side = buffer_distance / 2
+                coords = [
+                    QgsPointXY(x - half_side, y - half_side),
+                    QgsPointXY(x + half_side, y - half_side),
+                    QgsPointXY(x + half_side, y + half_side),
+                    QgsPointXY(x - half_side, y + half_side),
+                    QgsPointXY(x - half_side, y - half_side)
+                ]
+                buffer_geom = QgsGeometry.fromPolygonXY([coords])
+            elif buffer_type == "rectangle":
+                point_ = geom.asPoint()
+
+                half_width = self.custom_plot_format_x_value / 2
+                half_height = self.custom_plot_format_y_value / 2
+
+                # Define os cantos do retângulo ao redor do ponto central
+                rectangle_points = [
+                    QgsPointXY(point_.x() - half_width, point_.y() - half_height),
+                    QgsPointXY(point_.x() + half_width, point_.y() - half_height),
+                    QgsPointXY(point_.x() + half_width, point_.y() + half_height),
+                    QgsPointXY(point_.x() - half_width, point_.y() + half_height)
+                ]
+
+                buffer_geom = QgsGeometry.fromPolygonXY([rectangle_points])
+
+            # Cria a feição do buffer e define sua geometria e numeração
+            buffer_feature = QgsFeature()
+            buffer_feature.setGeometry(buffer_geom)
+
+            # Define o valor da numeração para o campo "buffer_n"
+            buffer_feature.setAttributes([plot_number])
+
+            provider.addFeatures([buffer_feature])
+
+        # Atualiza a camada e adiciona a opacidade
+        buffer_layer.updateExtents()
+        self.set_layer_opacity(buffer_layer, 0.5)
+        QgsProject.instance().addMapLayer(buffer_layer)
+        return buffer_layer
+
+    def set_layer_opacity(self, layer, opacity):
+        """Set the layer opacity."""
+        renderer = layer.renderer()
+        if renderer is not None:
+            symbol = renderer.symbol()
+            symbol.setOpacity(opacity)
+
     def initGui(self):
         """Create the menu entries and toolbar icons inside the QGIS GUI."""
+
 
         icon_path = ':/plugins/plot_alocation/icon.png'
         self.add_action(
@@ -605,18 +918,93 @@ class PlotAlocation:
                 action)
             self.iface.removeToolBarIcon(action)
 
+    def update_ok_button_state(self):
+        """Activate the OK button if all required fields are filled."""
+        is_shp_selected = bool(self.dlg.shp.currentText())
+        plot_format = self.dlg.plot_format_selector.currentText()
+        distribution = self.dlg.distribution.currentText()
+
+        if plot_format == "rectangle":
+            # Para o formato 'rectangle', é necessário que os valores X e Y sejam preenchidos e diferentes de zero
+            is_x_filled = self.dlg.custom_plot_format_x_value.value() > 0
+            is_y_filled = self.dlg.custom_plot_format_y_value.value() > 0
+            is_sample_number_filled = self.dlg.sample_number.value() > 0
+            is_valid = is_shp_selected and is_x_filled and is_y_filled and is_sample_number_filled
+            if distribution == "systematic custom":
+                # Para a distribuição 'systematic custom', os valores X e Y devem ser preenchidos e diferentes de zero
+                is_x_filled = self.dlg.systematic_custom_x_d.value() > 0
+                is_y_filled = self.dlg.systematic_custom_y_d.value() > 0
+                # Exigir 'plot_area' se o formato não for 'rectangle'
+                is_plot_area_filled = plot_format == "rectangle" or self.dlg.plot_area.value() > 0
+                is_valid = is_shp_selected and is_x_filled and is_y_filled and is_plot_area_filled and is_sample_number_filled
+        elif distribution == "systematic custom":
+            # Para a distribuição 'systematic custom', os valores X e Y devem ser preenchidos e diferentes de zero
+            is_x_filled = self.dlg.systematic_custom_x_d.value() > 0
+            is_y_filled = self.dlg.systematic_custom_y_d.value() > 0
+            # Exigir 'plot_area' se o formato não for 'rectangle'
+            is_plot_area_filled = plot_format == "rectangle" or self.dlg.plot_area.value() > 0
+            is_valid = is_shp_selected and is_x_filled and is_y_filled and is_plot_area_filled
+        else:
+            # Para outros formatos, o campo 'plot_area' é necessário
+            is_plot_area_filled = self.dlg.plot_area.value() > 0
+            is_sample_number_filled = self.dlg.sample_number.value() > 0 if self.dlg.sample_number.isEnabled() else True
+            is_valid = is_shp_selected and is_plot_area_filled and is_sample_number_filled
+
+        self.dlg.button_box.button(QDialogButtonBox.Ok).setEnabled(is_valid)
+
+    def update_sample_number_state(self):
+        """Ativa ou desativa o campo sample_number dependendo da distribuição selecionada."""
+        distribution = self.dlg.distribution.currentText()
+        if distribution == "systematic" or distribution == "systematic custom":
+            self.dlg.sample_number.setEnabled(False)
+        else:
+            self.dlg.sample_number.setEnabled(True)
+
+    def update_systematic_custom_parameters_state(self):
+        """Enable or disable systematic custom parameters based on the distribution type."""
+        is_custom_systematic = self.dlg.distribution.currentText() == "systematic custom"
+        self.dlg.systematic_custom_x_d.setEnabled(is_custom_systematic)
+        self.dlg.systematic_custom_y_d.setEnabled(is_custom_systematic)
+        self.dlg.systematic_custom_x_label.setEnabled(is_custom_systematic)
+        self.dlg.systematic_custom_y_label.setEnabled(is_custom_systematic)
+        self.dlg.systematic_custom_title.setEnabled(is_custom_systematic)
+        self.dlg.systematic_custom_degree_label.setEnabled(is_custom_systematic)
+        self.dlg.systematic_custom_degree.setEnabled(is_custom_systematic)
+
+    def update_rectangle_plot_format_parameters_state(self):
+        is_custom_plot_format = self.dlg.plot_format_selector.currentText() == "rectangle"
+        self.dlg.custom_plot_format_label_x.setEnabled(is_custom_plot_format)
+        self.dlg.custom_plot_format_label_y.setEnabled(is_custom_plot_format)
+        self.dlg.custom_plot_format_x_value.setEnabled(is_custom_plot_format)
+        self.dlg.custom_plot_format_y_value.setEnabled(is_custom_plot_format)
+
+        # Desativa o campo 'Plot area' se o formato selecionado é 'rectangle'
+        self.dlg.plot_area.setEnabled(not is_custom_plot_format)
+
+
+
     def run(self):
+        iface.messageBar().pushMessage("Atention", "Large areas may take some time to compute...", level=Qgis.Info)
         """Run method that performs all the real work"""
+        if self.dialog_open:  # Check if the dialog is already open
+            QMessageBox.warning(self.iface.mainWindow(), "Plugin Already Open", "The plugin is already open.")
+            return
 
         if self.first_start:
             self.first_start = False
             self.dlg = PlotAlocationDialog()
-            self.dlg.distribution.addItems(["random", "systematic", "systematic - hexagonal", "systematic - rotated",
-                                            "systematic - custom"])
+            self.dlg.distribution.addItems(["random", "best sampling", "systematic", "systematic custom"])
 
-            # Definir o botão de rádio "Sul" como selecionado por padrão
+            # Define o botão de rádio "Sul" como selecionado por padrão
             self.dlg.radio_button_south.setChecked(True)
 
+            # Initialize the plot_format_selector options
+            self.dlg.plot_format_selector.addItems(["round", "squared", "rectangle"])
+
+            # Connect the dialog's finished signal to a method that sets dialog_open to False
+            self.dlg.finished.connect(self.on_dialog_closed)
+
+        self.dialog_open = True  # Set the attribute to True when opening the dialog
         self.dlg.show()
 
         self.load_vectors()
@@ -631,94 +1019,270 @@ class PlotAlocation:
             self.dlg.output_name.textChanged.connect(self.update_ok_button_state)
             self.select_save_button_connected = True
 
-        # Conectar os botões de rádio ao método de atualização do EPSG
         self.dlg.radio_button_south.toggled.connect(self.update_epsg_selector)
         self.dlg.radio_button_north.toggled.connect(self.update_epsg_selector)
 
-        # Conectar sinais de alteração dos campos ao método de atualização do botão OK
         self.dlg.plot_area.valueChanged.connect(self.update_ok_button_state)
         self.dlg.sample_number.valueChanged.connect(self.update_ok_button_state)
         self.dlg.min_border_distance.valueChanged.connect(self.update_ok_button_state)
         self.dlg.epsg_selector.currentIndexChanged.connect(self.update_ok_button_state)
 
-        # Inicializar estado do botão OK
+        self.dlg.distribution.currentIndexChanged.connect(self.update_sample_number_state)
+        self.dlg.distribution.currentIndexChanged.connect(self.update_systematic_custom_parameters_state)
+        self.dlg.plot_format_selector.currentIndexChanged.connect(self.update_systematic_custom_parameters_state)
+        self.dlg.distribution.currentIndexChanged.connect(self.update_rectangle_plot_format_parameters_state)
+        self.dlg.plot_format_selector.currentIndexChanged.connect(self.update_rectangle_plot_format_parameters_state)
+        self.dlg.distribution.currentIndexChanged.connect(self.update_ok_button_state)
+        self.dlg.plot_format_selector.currentIndexChanged.connect(self.update_ok_button_state)
+        self.dlg.custom_plot_format_x_value.valueChanged.connect(self.update_ok_button_state)
+        self.dlg.custom_plot_format_y_value.valueChanged.connect(self.update_ok_button_state)
+        self.dlg.custom_plot_format_y_value.valueChanged.connect(self.update_systematic_custom_parameters_state)
+        self.dlg.custom_plot_format_x_value.valueChanged.connect(self.update_systematic_custom_parameters_state)
+        self.dlg.systematic_custom_x_d.valueChanged.connect(self.update_ok_button_state)
+        self.dlg.systematic_custom_y_d.valueChanged.connect(self.update_ok_button_state)
+
         self.update_ok_button_state()
+        self.update_sample_number_state()
+        self.update_systematic_custom_parameters_state()
 
         result = self.dlg.exec_()
         if result:
             self.shp_layer = self.set_input_layer()
+            self.crs = self.shp_layer.crs().toWkt()
+            self.min_border_distance = self.dlg.min_border_distance.value()
+            if self.min_border_distance < 0:
+                raise ValueError("Minimum border distance must be non-negative.")
+            QgsMessageLog.logMessage(f"Min Border Distance: {self.min_border_distance}", 'Your Plugin Name', Qgis.Info)
+
+            self.plot_area = self.dlg.plot_area.value()
+            self.plot_format = self.dlg.plot_format_selector.currentText()
+
+            self.layer_name = self.dlg.shp.currentText()
+            if self.dlg.plot_format_selector.currentText() == "rectangle":
+                self.custom_plot_format_x_value = float(
+                    self.dlg.custom_plot_format_x_value.value())
+                self.custom_plot_format_y_value = float(
+                    self.dlg.custom_plot_format_y_value.value())
+                self.plot_area = self.custom_plot_format_x_value * self.custom_plot_format_y_value
+
+            self.reduced_shp = self.get_reduced_polygons_to_min_border_distance(self.shp_layer)
+
+            self.reduced_shp_total_area = self.calculate_total_area(self.reduced_shp)
+
             if not self.shp_layer:
-                return  # Exit if no polygon layer is selected
+                return
             try:
-                self.plot_area = self.dlg.plot_area.value()  # Obtém o valor diretamente do QDoubleSpinBox
+
+                if self.plot_area <= 0:
+                    raise ValueError("Plot area must be greater than zero.")
                 QgsMessageLog.logMessage(f"Plot Area: {self.plot_area}", 'Your Plugin Name', Qgis.Info)
-                self.sample_number = self.dlg.sample_number.value()  # Obtém o valor diretamente do QDoubleSpinBox
-                QgsMessageLog.logMessage(f"Sample Number: {self.sample_number}", 'Your Plugin Name', Qgis.Info)
-                self.min_border_distance = self.dlg.min_border_distance.value()  # Obtém o valor diretamente do QDoubleSpinBox
-                QgsMessageLog.logMessage(f"Min Border Distance: {self.min_border_distance}", 'Your Plugin Name',
-                                         Qgis.Info)
+
+                self.sample_number = self.dlg.sample_number.value()
+                if self.sample_number < 1:
+                    self.max_number_of_points = math.ceil((self.sample_number * self.total_area) / self.plot_area)
+                else:
+                    self.max_number_of_points = self.sample_number
+
+                """CRIAÇÃO DAS PARCELAS PROPORCIONAIS POR TALHAO"""
+                # Inicializa as listas para armazenar os resultados
+                area_prop_list = []
+
+                # Itera sobre as feições da camada
+                for feature in self.reduced_shp.getFeatures():
+                    geom = feature.geometry()
+                    area = geom.area()
+
+                    # Calcula a proporção da área
+                    area_prop = area / self.reduced_shp_total_area
+                    area_prop_list.append(area_prop)
+
+                # Calcula o número de parcelas proporcional à área para cada talhão
+                plots_list = np.array(area_prop_list) * self.max_number_of_points
+
+                # Arredonda para o inteiro mais próximo e soma as parcelas para ajustar
+                plots_list = np.round(plots_list).astype(int)
+
+                # Ajusta o número de parcelas para garantir que a soma seja igual a max_number_of_points
+                difference = self.max_number_of_points - plots_list.sum()
+
+                # Distribui a diferença para corrigir a soma
+                while difference != 0:
+                    if difference > 0:
+                        # Adiciona parcelas, uma por uma, começando pelas maiores proporções
+                        for i in np.argsort(-np.array(area_prop_list)):
+                            plots_list[i] += 1
+                            difference = self.max_number_of_points - plots_list.sum()
+                            if difference == 0:
+                                break
+                    elif difference < 0:
+                        # Remove parcelas, uma por uma, começando pelas menores proporções
+                        for i in np.argsort(np.array(area_prop_list)):
+                            if plots_list[i] > 0:  # Garantir que não removemos de talhões que já têm 0 parcelas
+                                plots_list[i] -= 1
+                                difference = self.max_number_of_points - plots_list.sum()
+                                if difference == 0:
+                                    break
+
+                """FIM CRIAÇÃO DAS PARCELAS PROPORCIONAIS POR TALHAO"""
+                # Adiciona os novos atributos à tabela de atributos, se ainda não existirem
+                if self.reduced_shp.fields().indexFromName('area_prop') == -1:
+                    self.reduced_shp.dataProvider().addAttributes([QgsField('area_prop', QVariant.Double)])
+                if self.reduced_shp.fields().indexFromName('plots') == -1:
+                    self.reduced_shp.dataProvider().addAttributes([QgsField('plots', QVariant.Int)])
+
+                self.reduced_shp.updateFields()
+
+                # Inicia a edição da camada
+                self.reduced_shp.startEditing()
+
+                # Atualiza os valores dos atributos
+                for i, feature in enumerate(self.reduced_shp.getFeatures()):
+                    self.reduced_shp.changeAttributeValue(feature.id(),
+                                                          self.reduced_shp.fields().indexFromName('area_prop'),
+                                                          area_prop_list[i])
+                    self.reduced_shp.changeAttributeValue(feature.id(),
+                                                          self.reduced_shp.fields().indexFromName('plots'),
+                                                          int(plots_list[i]))
+                # Confirma as alterações
+                self.reduced_shp.commitChanges()
+
+
+                if self.sample_number < 0:
+                    raise ValueError("Sample number must be non-negative.")
+
+
+
+
                 self.distribution = self.dlg.distribution.currentText()
                 QgsMessageLog.logMessage(f"Distribution: {self.distribution}", 'Your Plugin Name', Qgis.Info)
+                self.buffer_check_box = self.dlg.buffer_check_box.isChecked()
+                QgsMessageLog.logMessage(f"Buffer Check Box: {self.buffer_check_box}", 'Your Plugin Name', Qgis.Info)
 
-                # Calcular a área total
                 self.total_area = self.calculate_total_area(self.shp_layer)
+                if self.total_area <= 0:
+                    raise ValueError("Total area must be greater than zero.")
                 QgsMessageLog.logMessage(f"Total Area: {self.total_area}", 'Your Plugin Name', Qgis.Info)
 
-                # Verificar se o número de parcelas excede o tamanho da área total do limite
                 if self.sample_number * self.plot_area >= self.total_area:
                     QMessageBox.warning(self.dlg, "Aviso", "The number of plots exceeds the total boundary area.")
-                    return  # Keep the dialog open
+                    return
+
                 if self.distribution == "random":
                     point_layer = self._generate_random_sample_points(self.shp_layer, self.plot_area)
                 elif self.distribution == "systematic":
                     point_layer = self._generate_systematic_sample_points(self.shp_layer, self.plot_area)
-                elif self.distribution == "systematic - hexagonal":
-                    point_layer = self._generate_hexagonal_sample_points(self.shp_layer, self.plot_area)
-                elif self.distribution == "systematic - rotated":
-                    point_layer = self._generate_rotated_sample_points(self.shp_layer, self.plot_area)
+                elif self.distribution == "best sampling":
+                    point_layer = self._generate_systematic_best_sampling_sample_points()
+                elif self.distribution == "systematic custom":
+                    self.systematic_custom_x_d = self.dlg.systematic_custom_x_d.value()
+                    self.systematic_custom_y_d = self.dlg.systematic_custom_y_d.value()
+                    self.systematic_custom_degree = self.dlg.systematic_custom_degree.value()
+
+                    point_layer = self._generate_systematic_custom_sample_points(self.shp_layer, self.plot_area)
                 else:
                     QMessageBox.warning(self.dlg, "Aviso", "Distribuição não suportada.")
-                    return  # Keep the dialog open
+                    return
 
                 if point_layer:
                     output_path = self.dlg.output_name.text()
-                    output_dir = os.path.dirname(output_path)
-                    if output_path and os.path.isdir(output_dir):
-                        options = QgsVectorFileWriter.SaveVectorOptions()
-                        options.driverName = "ESRI Shapefile"
-                        transform_context = QgsProject.instance().transformContext()
-                        error = QgsVectorFileWriter.writeAsVectorFormatV3(
-                            point_layer,
-                            output_path,
-                            QgsCoordinateTransformContext(transform_context),
-                            options
-                        )
-                        if error[0] == QgsVectorFileWriter.NoError:
-                            QgsMessageLog.logMessage("Point layer saved successfully.", 'Your Plugin Name', Qgis.Info)
-                            # Carregar o shapefile salvo no QGIS
-                            layer_name = f"Sample points ({self.distribution})"
-                            saved_layer = QgsVectorLayer(output_path, layer_name, "ogr")
-                            if saved_layer.isValid():
-                                QgsProject.instance().addMapLayer(saved_layer)
+                    if output_path:
+                        output_dir = os.path.dirname(output_path)
+                        if os.path.isdir(output_dir):
+                            options = QgsVectorFileWriter.SaveVectorOptions()
+                            options.driverName = "ESRI Shapefile"
+                            transform_context = QgsProject.instance().transformContext()
+                            error = QgsVectorFileWriter.writeAsVectorFormatV3(
+                                point_layer,
+                                output_path,
+                                QgsCoordinateTransformContext(transform_context),
+                                options
+                            )
+                            if error[0] == QgsVectorFileWriter.NoError:
+                                saved_layer = QgsVectorLayer(output_path,
+                                                             os.path.splitext(os.path.basename(output_path))[0], "ogr")
+                                if saved_layer.isValid():
+                                    QgsProject.instance().addMapLayer(saved_layer)
+
+                                    if self.buffer_check_box:
+                                        buffer_distance = math.sqrt(
+                                            self.plot_area / math.pi) if self.plot_format == "round" else math.sqrt(
+                                            self.plot_area)
+
+                                        # Criar a camada de buffer
+                                        buffer_layer = self.create_buffer_layer(saved_layer, buffer_distance,
+                                                                                self.plot_format)
+
+                                        if buffer_layer.isValid():
+                                            # Definir o caminho de saída para o buffer
+                                            buffer_output_path = os.path.join(output_dir,
+                                                                              os.path.splitext(
+                                                                                  os.path.basename(output_path))[
+                                                                                  0] + "_buffer.shp")  # Adicione a extensão .shp
+                                            buffer_options = QgsVectorFileWriter.SaveVectorOptions()
+                                            buffer_options.driverName = "ESRI Shapefile"
+
+                                            buffer_error = QgsVectorFileWriter.writeAsVectorFormatV3(
+                                                buffer_layer,
+                                                buffer_output_path,
+                                                QgsCoordinateTransformContext(transform_context),
+                                                buffer_options
+                                            )
+
+                                            if buffer_error[0] == QgsVectorFileWriter.NoError:
+                                                # Remover a camada de buffer existente, se houver
+                                                existing_buffer_layer = QgsProject.instance().mapLayersByName(
+                                                    f"{saved_layer.name()}_buffer")
+                                                if existing_buffer_layer:
+                                                    QgsProject.instance().removeMapLayer(existing_buffer_layer[
+                                                                                             0].id())  # Remove a primeira camada encontrada
+
+                                                # Adicionar a nova camada de buffer ao projeto
+                                                new_buffer_layer = QgsVectorLayer(buffer_output_path,
+                                                                                  f"{saved_layer.name()}_buffer", "ogr")
+                                                QgsProject.instance().addMapLayer(new_buffer_layer)
+
+                                                # Definir a opacidade do buffer
+                                                self.set_layer_opacity(new_buffer_layer, 0.5)
+
+
+                                            else:
+                                                QMessageBox.critical(self.dlg, "Erro",
+                                                                     f"Error saving buffer layer: {buffer_error[1]}")
+                                                return
+                                        else:
+                                            QMessageBox.critical(self.dlg, "Erro", "Failed to create buffer layer.")
+                                            return
+                                else:
+                                    QMessageBox.critical(self.dlg, "Erro", "Failed to load the saved layer.")
+                                    return
                             else:
-                                QMessageBox.critical(self.dlg, "Erro", "Failed to load the saved layer.")
-                                return  # Keep the dialog open
+                                QMessageBox.critical(self.dlg, "Erro", f"Error saving point layer: {error[1]}")
+                                return
                         else:
-                            QMessageBox.critical(self.dlg, "Erro", f"Error saving point layer: {error[1]}")
-                            return  # Keep the dialog open
+                            QMessageBox.critical(self.dlg, "Erro", "Output directory does not exist.")
+                            return
                     else:
-                        QMessageBox.critical(self.dlg, "Erro",
-                                             "Output path is not specified or directory does not exist.")
-                        return  # Keep the dialog open
+                        QgsProject.instance().addMapLayer(point_layer)
+
+                        if self.buffer_check_box:
+                            buffer_distance = math.sqrt(
+                                self.plot_area / math.pi) if self.plot_format == "round" else math.sqrt(self.plot_area)
+                            self.create_buffer_layer(point_layer, buffer_distance, self.plot_format)
                 else:
                     QMessageBox.critical(self.dlg, "Erro", "Não foi possível gerar a camada de pontos.")
-                    return  # Keep the dialog open
+                    return
+
 
             except Exception as e:
                 QgsMessageLog.logMessage(f"Erro ao acessar um campo: {e}", 'Your Plugin Name', Qgis.Critical)
                 QgsMessageLog.logMessage(traceback.format_exc(), 'Your Plugin Name', Qgis.Critical)
                 QMessageBox.critical(self.dlg, "Erro", f"Erro ao acessar um campo: {e}")
-                return  # Keep the dialog open
+                return
+
+    def on_dialog_closed(self):
+        self.dialog_open = False
+
+
 
 
 

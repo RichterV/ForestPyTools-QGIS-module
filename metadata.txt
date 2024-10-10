@@ -6,14 +6,15 @@
 name=FPT Plot Alocation
 qgisMinimumVersion=3.0
 description=Plot alocation for forest inventory
-version=0.1
+version=0.4
 author= Vinicius Richter and Renato Souza Santos
-email=vinicius00rich@gmail.com
+email= vinicius00rich@gmail.com, renatosouzaef@gmail.com
+
 
 about=In this module, you will be able to plan forest inventories by allocating plots.
 
-tracker=https://richterv.github.io/fptoolsdoc/index.html
-repository=https://richterv.github.io/fptoolsdoc/index.html
+tracker=https://forms.gle/vGTvwew1SoB11jxY6
+repository=https://github.com/RichterV/ForestPyTools-QGIS-module
 # End of mandatory metadata
 
 # Recommended items:
@@ -25,7 +26,7 @@ hasProcessingProvider=no
 # Tags are comma separated with spaces allowed
 tags=python
 
-homepage=https://richterv.github.io/fptoolsdoc/plot_alocation.html
+homepage=https://richterv.github.io/fptoolsdoc/plot_alocation_qgis.html
 category=Plugins
 icon=icon.png
 # experimental flag
