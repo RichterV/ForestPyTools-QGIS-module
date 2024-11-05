@@ -469,7 +469,7 @@ class PlotAlocation:
         if len(valid_points) < self.max_number_of_points:
             QMessageBox.warning(self.dlg, "Warning!",
                                 "Unable to generate plots with the established criteria. Only the possible plots were generated.")
-            return valid_points
+            return self.create_point_layer(valid_points, self.crs)
 
         QgsMessageLog.logMessage(f"self.shp_layer.crs= {self.shp_layer.crs}", 'Your Plugin Name',
                                  Qgis.Critical)
@@ -1081,7 +1081,7 @@ class PlotAlocation:
                 if self.sample_number < 1:
                     self.max_number_of_points = math.ceil((self.sample_number * self.total_area) / self.plot_area)
                 else:
-                    self.max_number_of_points = self.sample_number
+                    self.max_number_of_points = math.floor(self.sample_number)
 
                 """CRIAÇÃO DAS PARCELAS PROPORCIONAIS POR TALHAO"""
                 # Inicializa as listas para armazenar os resultados
