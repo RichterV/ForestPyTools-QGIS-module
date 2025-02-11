@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>502</width>
-    <height>374</height>
+    <width>514</width>
+    <height>460</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -17,7 +17,7 @@
    <property name="geometry">
     <rect>
      <x>170</x>
-     <y>330</y>
+     <y>400</y>
      <width>161</width>
      <height>32</height>
     </rect>
@@ -46,7 +46,7 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>180</y>
+     <y>250</y>
      <width>81</width>
      <height>16</height>
     </rect>
@@ -56,10 +56,13 @@
    </property>
   </widget>
   <widget class="QLabel" name="label_3">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>230</y>
+     <y>300</y>
      <width>191</width>
      <height>16</height>
     </rect>
@@ -72,7 +75,7 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>280</y>
+     <y>350</y>
      <width>171</width>
      <height>16</height>
     </rect>
@@ -117,8 +120,8 @@
   <widget class="QLabel" name="label_6">
    <property name="geometry">
     <rect>
-     <x>220</x>
-     <y>250</y>
+     <x>250</x>
+     <y>320</y>
      <width>222</width>
      <height>13</height>
     </rect>
@@ -130,8 +133,8 @@
   <widget class="QLineEdit" name="output_name">
    <property name="geometry">
     <rect>
-     <x>220</x>
-     <y>270</y>
+     <x>250</x>
+     <y>340</y>
      <width>221</width>
      <height>20</height>
     </rect>
@@ -153,8 +156,8 @@
   <widget class="QToolButton" name="select_save_button">
    <property name="geometry">
     <rect>
-     <x>450</x>
-     <y>270</y>
+     <x>480</x>
+     <y>330</y>
      <width>31</width>
      <height>21</height>
     </rect>
@@ -164,12 +167,15 @@
    </property>
   </widget>
   <widget class="QDoubleSpinBox" name="sample_number">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>250</y>
-     <width>101</width>
-     <height>22</height>
+     <y>320</y>
+     <width>93</width>
+     <height>20</height>
     </rect>
    </property>
    <property name="autoFillBackground">
@@ -186,7 +192,7 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>200</y>
+     <y>270</y>
      <width>101</width>
      <height>22</height>
     </rect>
@@ -199,7 +205,7 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>300</y>
+     <y>370</y>
      <width>101</width>
      <height>22</height>
     </rect>
@@ -211,8 +217,8 @@
   <widget class="QLabel" name="label_7">
    <property name="geometry">
     <rect>
-     <x>220</x>
-     <y>180</y>
+     <x>250</x>
+     <y>250</y>
      <width>91</width>
      <height>16</height>
     </rect>
@@ -224,18 +230,21 @@
   <widget class="QComboBox" name="epsg_selector">
    <property name="geometry">
     <rect>
-     <x>220</x>
-     <y>220</y>
+     <x>250</x>
+     <y>290</y>
      <width>261</width>
      <height>22</height>
     </rect>
    </property>
   </widget>
   <widget class="QRadioButton" name="radio_button_south">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
    <property name="geometry">
     <rect>
-     <x>220</x>
-     <y>200</y>
+     <x>250</x>
+     <y>270</y>
      <width>82</width>
      <height>17</height>
     </rect>
@@ -244,14 +253,14 @@
     <string>South</string>
    </property>
    <property name="checked">
-    <bool>false</bool>
+    <bool>true</bool>
    </property>
   </widget>
   <widget class="QRadioButton" name="radio_button_north">
    <property name="geometry">
     <rect>
-     <x>280</x>
-     <y>200</y>
+     <x>310</x>
+     <y>270</y>
      <width>82</width>
      <height>17</height>
     </rect>
@@ -287,7 +296,7 @@
    <property name="geometry">
     <rect>
      <x>200</x>
-     <y>310</y>
+     <y>380</y>
      <width>151</width>
      <height>17</height>
     </rect>
@@ -484,6 +493,103 @@
     <double>0.500000000000000</double>
    </property>
   </widget>
+  <widget class="QLabel" name="label_9">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>200</y>
+     <width>131</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Number of plots column:</string>
+   </property>
+  </widget>
+  <widget class="QComboBox" name="plots_column">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>220</y>
+     <width>281</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="editable">
+    <bool>false</bool>
+   </property>
+  </widget>
+  <widget class="QLabel" name="label_10">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>180</y>
+     <width>191</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Use a column to define plots number</string>
+   </property>
+  </widget>
+  <widget class="QCheckBox" name="use_column_n_plots_checkbox">
+   <property name="geometry">
+    <rect>
+     <x>200</x>
+     <y>180</y>
+     <width>21</width>
+     <height>17</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+  </widget>
+  <widget class="QCheckBox" name="by_hectare_checkbox">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>118</x>
+     <y>320</y>
+     <width>16</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+  </widget>
+  <widget class="QLabel" name="label_11">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>136</x>
+     <y>320</y>
+     <width>71</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>By hectare</string>
+   </property>
+  </widget>
+  <widget class="Line" name="line">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>340</y>
+     <width>191</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Horizontal</enum>
+   </property>
+  </widget>
   <zorder>systematic_custom_y_label</zorder>
   <zorder>label_2</zorder>
   <zorder>button_box</zorder>
@@ -517,6 +623,13 @@
   <zorder>custom_plot_format_label_y</zorder>
   <zorder>custom_plot_format_x_value</zorder>
   <zorder>custom_plot_format_y_value</zorder>
+  <zorder>label_9</zorder>
+  <zorder>plots_column</zorder>
+  <zorder>label_10</zorder>
+  <zorder>use_column_n_plots_checkbox</zorder>
+  <zorder>by_hectare_checkbox</zorder>
+  <zorder>label_11</zorder>
+  <zorder>line</zorder>
  </widget>
  <resources/>
  <connections>
