@@ -6,12 +6,12 @@
 name=FPT Plot Alocation
 qgisMinimumVersion=3.0
 description=Plot alocation for forest inventory
-version=0.54
+version=0.61
 author= Vinicius Richter
 email= vinicius00rich@gmail.com
 
 
-about=In this module, you will be able to plan forest inventories by allocating plots.
+about=In this module, you will be able to plan forest inventories by allocating plots. Requires the installation of the scikit-learn library using the command 'pip install scikit-learn' in the 'OSGeo4W Shell'.
 
 tracker=https://forms.gle/vGTvwew1SoB11jxY6
 repository=https://github.com/RichterV/ForestPyTools-QGIS-module

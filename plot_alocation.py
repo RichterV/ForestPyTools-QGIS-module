@@ -353,53 +353,26 @@ class PlotAlocation:
     def _check_points_distance(self, point, plot_area, existing_points, buffer_type):
         """Check if the point is at a valid distance from existing points and polygon boundaries."""
         if buffer_type == "round":
-            radius = math.sqrt(plot_area / math.pi)
+            min_distance = self.get_distances()[1]  # Obtém a distância mínima permitida
             for existing_point in existing_points:
-                distance = point.distance(existing_point)
-                if distance < radius * 2:
+                if point.distance(existing_point) < min_distance:
                     return False
-            for feature in self.shp_layer.getFeatures():
-                geom = feature.geometry()
-                if geom:
-                    shapely_geom = shape(mapping(geom))  # Convert QGIS geometry to shapely
-                    boundary = shapely_geom.boundary  # Get shapely geometry boundary
-                    distance_to_boundary = point.distance(
-                        QgsGeometry.fromWkt(boundary.wkt))  # Convert back to QGIS geometry
-                    if distance_to_boundary < (self.get_distances()[0]):
-                        return False
+
+            return True
+
+
         elif buffer_type == "squared":
-            # Calculate half the side length of the square
-            half_side = math.sqrt(plot_area) / 2
-            point_x, point_y = point.asPoint().x(), point.asPoint().y()
-
-            # Define the bounds of the square
-            min_x, min_y = point_x - half_side, point_y - half_side
-            max_x, max_y = point_x + half_side, point_y + half_side
-
+            min_distance = self.get_distances()[1]  # Obtém a distância mínima permitida
             for existing_point in existing_points:
-                existing_x, existing_y = existing_point.asPoint().x(), existing_point.asPoint().y()
-                existing_min_x, existing_min_y = existing_x - half_side, existing_y - half_side
-                existing_max_x, existing_max_y = existing_x + half_side, existing_y + half_side
-
-                # Check if the squares overlap
-                if not (
-                        min_x >= existing_max_x or max_x <= existing_min_x or min_y >= existing_max_y or max_y <= existing_min_y):
+                if point.distance(existing_point) < min_distance:
                     return False
 
-            # Check distance between point and each polygon boundary
-            for feature in self.shp_layer.getFeatures():
-                geom = feature.geometry()
-                if geom:
-                    shapely_geom = shape(mapping(geom))  # Convert QGIS geometry to shapely
-                    boundary = shapely_geom.boundary  # Get shapely geometry boundary
-                    distance_to_boundary = point.distance(
-                        QgsGeometry.fromWkt(boundary.wkt))  # Convert back to QGIS geometry
-                    if distance_to_boundary < (self.get_distances()[0]):
-                        return False
+            return True
         elif buffer_type == "rectangle":
-            rect_width = self.custom_plot_format_x_value
-            rect_height = self.custom_plot_format_y_value
-            return self._check_rectangle(point, existing_points, rect_width,rect_height)
+            min_distance = self.get_distances()[1]  # Obtém a distância mínima permitida
+            for existing_point in existing_points:
+                if point.distance(existing_point) < min_distance:
+                    return False
         return True
 
     def get_distances(self):
@@ -409,17 +382,13 @@ class PlotAlocation:
         if self.plot_format == 'squared':
             add_value = (math.sqrt(self.plot_area))
         if self.plot_format == 'rectangle':
-            add_value = math.sqrt((self.custom_plot_format_x_value/2) ** 2 + (self.custom_plot_format_y_value ** 2))
+            distance_from_each_other = math.sqrt((self.custom_plot_format_x_value) ** 2 + (self.custom_plot_format_y_value ** 2))
+            distance_from_border = max(self.custom_plot_format_x_value, self.custom_plot_format_y_value)
+            return distance_from_border, distance_from_each_other
         distance_from_each_other = add_value
         distance_from_border = self.min_border_distance + add_value
         return distance_from_border, distance_from_each_other
 
-    def _check_point_within_polygons(self, point, layer):
-        """Check if a point is within any polygons of the layer."""
-        for feature in layer.getFeatures():
-            if feature.geometry().contains(point):
-                return True
-        return False
 
     def create_all_possible_points(self, with_index_flag=False):
         """Essa função cria todos os pontos possíveis, de acordo com grid_spacing.
@@ -503,7 +472,6 @@ class PlotAlocation:
         # Adicionar os nomes das colunas ao QComboBox plots_column
         self.dlg.plots_column.addItems(field_names)
 
-    from shapely.ops import nearest_points
 
     def _generate_systematic_best_sampling_sample_points(self):
         valid_points = self.create_all_possible_points()
@@ -610,7 +578,6 @@ class PlotAlocation:
         for feature in shp.getFeatures():
             feature_id = feature.id()
             num_points = self.plots_list.get(feature_id, 0)
-
             if num_points <= 0:
                 continue  # Pula talhões sem parcelas atribuídas
 
@@ -644,14 +611,18 @@ class PlotAlocation:
                     point = QgsGeometry.fromPointXY(QgsPointXY(x, y))
                     transformed_point = self.transform_to_layer_crs(point, source_crs, target_crs)
 
-                    if (
-                            transformed_point is not None and
-                            self._check_point_within_polygons(transformed_point, shp) and
-                            self._check_points_distance(transformed_point, plot_area, talhao_points, self.plot_format)
-                    ):
-                        talhao_points.append(transformed_point)
-
-                    attempts += 1
+                    if geometry.contains(transformed_point):
+                        if attempts==0:
+                            talhao_points.append(transformed_point)
+                            attempts += 1
+                        else:
+                            attempts += 1
+                            if (self._check_points_distance(transformed_point, plot_area, talhao_points, self.plot_format)):
+                                talhao_points.append(transformed_point)
+                            if debbug_mode:
+                                if attempts == max_attempts:
+                                    QgsMessageLog.logMessage("CHEGOU NO MÁXIMO DE TENTATIVAS.",
+                                                             'Your Plugin Name', Qgis.Critical)
 
                 valid_points.extend(talhao_points)
 
@@ -1112,6 +1083,7 @@ class PlotAlocation:
             self.dlg.use_column_n_plots_checkbox.toggled.connect(self.update_sample_number_state)
 
 
+
             # Conectar o fechamento da janela para resetar o estado do plugin
             self.dlg.finished.connect(self.on_dialog_closed)
 
@@ -1120,8 +1092,7 @@ class PlotAlocation:
 
         self.load_vectors()
 
-        # define o botão de usar coluna como n plots
-        self.dlg.use_column_n_plots_checkbox.setChecked(True)
+
 
 
         if not self.select_button_connected:
@@ -1198,6 +1169,12 @@ class PlotAlocation:
                 QgsProject.instance().addMapLayer(self.reduced_shp, True)
 
             self.reduced_shp_total_area = self.calculate_total_area(self.reduced_shp)
+
+            if self.dlg.by_hectare_checkbox.isChecked() and self.dlg.sample_number.value() < 1:
+                QMessageBox.warning(self.dlg, "Warning",
+                                    "Sample number must be at least 1 when using 'by hectare' option.")
+                return  # Interrompe a execução caso a condição seja atendida
+
 
             if not self.shp_layer:
                 return
@@ -1358,9 +1335,9 @@ class PlotAlocation:
                     return
 
                 if self.distribution == "random":
-                    point_layer = self._generate_random_sample_points(self.shp_layer, self.plot_area)
+                    point_layer = self._generate_random_sample_points(self.reduced_shp, self.plot_area)
                 elif self.distribution == "systematic":
-                    point_layer = self._generate_systematic_sample_points(self.shp_layer, self.plot_area)
+                    point_layer = self._generate_systematic_sample_points(self.reduced_shp, self.plot_area)
                 elif self.distribution == "best sampling":
                     point_layer = self._generate_systematic_best_sampling_sample_points()
                 elif self.distribution == "systematic custom":
@@ -1368,7 +1345,7 @@ class PlotAlocation:
                     self.systematic_custom_y_d = self.dlg.systematic_custom_y_d.value()
                     self.systematic_custom_degree = self.dlg.systematic_custom_degree.value()
 
-                    point_layer = self._generate_systematic_custom_sample_points(self.shp_layer, self.plot_area)
+                    point_layer = self._generate_systematic_custom_sample_points(self.reduced_shp, self.plot_area)
                 else:
                     QMessageBox.warning(self.dlg, "Aviso", "Distribuição não suportada.")
                     return

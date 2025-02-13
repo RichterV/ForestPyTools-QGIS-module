@@ -544,6 +544,9 @@
    <property name="text">
     <string/>
    </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
   </widget>
   <widget class="QCheckBox" name="by_hectare_checkbox">
    <property name="enabled">
