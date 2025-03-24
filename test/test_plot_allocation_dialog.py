@@ -16,18 +16,18 @@ import unittest
 
 from qgis.PyQt.QtGui import QDialogButtonBox, QDialog
 
-from plot_alocation_dialog import PlotAlocationDialog
+from plot_allocation_dialog import PlotAllocationDialog
 
 from utilities import get_qgis_app
 QGIS_APP = get_qgis_app()
 
 
-class PlotAlocationDialogTest(unittest.TestCase):
+class PlotAllocationDialogTest(unittest.TestCase):
     """Test dialog works."""
 
     def setUp(self):
         """Runs before each test."""
-        self.dialog = PlotAlocationDialog(None)
+        self.dialog = PlotAllocationDialog(None)
 
     def tearDown(self):
         """Runs after each test."""
@@ -49,7 +49,7 @@ class PlotAlocationDialogTest(unittest.TestCase):
         self.assertEqual(result, QDialog.Rejected)
 
 if __name__ == "__main__":
-    suite = unittest.makeSuite(PlotAlocationDialogTest)
+    suite = unittest.makeSuite(PlotAllocationDialogTest)
     runner = unittest.TextTestRunner(verbosity=2)
     runner.run(suite)
 

@@ -1,5 +1,5 @@
 <RCC>
-    <qresource prefix="/plugins/plot_alocation" >
+    <qresource prefix="/plugins/plot_allocation" >
         <file>icon.png</file>
     </qresource>
 </RCC>

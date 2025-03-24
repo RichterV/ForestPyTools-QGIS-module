@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>PlotAlocationDialogBase</class>
- <widget class="QDialog" name="PlotAlocationDialogBase">
+ <class>PlotAllocationDialogBase</class>
+ <widget class="QDialog" name="PlotAllocationDialogBase">
   <property name="geometry">
    <rect>
     <x>0</x>
@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>FPT Plot Alocation</string>
+   <string>FPT Plot Allocation</string>
   </property>
   <widget class="QDialogButtonBox" name="button_box">
    <property name="geometry">
@@ -639,7 +639,7 @@
   <connection>
    <sender>button_box</sender>
    <signal>accepted()</signal>
-   <receiver>PlotAlocationDialogBase</receiver>
+   <receiver>PlotAllocationDialogBase</receiver>
    <slot>accept()</slot>
    <hints>
     <hint type="sourcelabel">
@@ -655,7 +655,7 @@
   <connection>
    <sender>button_box</sender>
    <signal>rejected()</signal>
-   <receiver>PlotAlocationDialogBase</receiver>
+   <receiver>PlotAllocationDialogBase</receiver>
    <slot>reject()</slot>
    <hints>
     <hint type="sourcelabel">
