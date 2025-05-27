@@ -429,7 +429,7 @@ class PlotAllocation:
         if self.plot_format == 'round':
             add_value = math.sqrt(self.plot_area/math.pi) * 2
         if self.plot_format == 'squared':
-            add_value = (math.sqrt(self.plot_area))
+            add_value = (math.sqrt(self.plot_area)) * math.sqrt(2)
         if self.plot_format == 'rectangle':
             distance_from_each_other = math.sqrt((self.custom_plot_format_x_value) ** 2 + (self.custom_plot_format_y_value ** 2))
             distance_from_border = max(self.custom_plot_format_x_value, self.custom_plot_format_y_value)
